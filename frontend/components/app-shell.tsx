@@ -1,0 +1,15 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { ReactNode, useEffect, useState } from "react";
+import { getToken, request, type User } from "@/lib/auth";
+
+export function AppShell({ children }: { children: ReactNode }) {
+  const path = usePathname(); const router = useRouter(); const [user, setUser] = useState<User | null>(null);
+  useEffect(() => { const token = getToken(); if (!token) { router.replace("/login"); return; } request<User>("/auth/me", {}, token).then(setUser).catch(() => { localStorage.removeItem("access_token"); router.replace("/login"); }); }, [router]);
+  async function logout() { const token = getToken(); try { if (token) await request<void>("/auth/logout", { method: "POST" }, token); } finally { localStorage.removeItem("access_token"); router.replace("/"); } }
+  if (!user) return <main className="grid min-h-screen place-items-center bg-[#f7f8fc] text-sm text-slate-500">Loading your workspace…</main>;
+  const nav = [{ href: "/dashboard", label: "Overview" }, { href: "/applications", label: "Applications" }];
+  return <div className="min-h-screen bg-[#f7f8fc] text-slate-900"><aside className="fixed inset-y-0 hidden w-64 border-r border-slate-200 bg-white px-5 py-7 lg:block"><Link href="/dashboard" className="text-xl font-bold tracking-tight">Career<span className="text-indigo-600">Pilot</span></Link><p className="mt-1 text-xs text-slate-500">Application command center</p><nav className="mt-10 space-y-1">{nav.map(item => <Link key={item.href} href={item.href} className={`block rounded-lg px-3 py-2.5 text-sm font-medium ${path === item.href ? "bg-indigo-50 text-indigo-700" : "text-slate-600 hover:bg-slate-50"}`}>{item.label}</Link>)}</nav><div className="absolute bottom-7 left-5 right-5 rounded-xl bg-slate-900 p-4 text-white"><p className="text-xs font-semibold text-indigo-300">{user.plan} PLAN</p><p className="mt-1 text-sm font-semibold">{user.plan === "FREE" ? "ATS access included" : "Full career toolkit"}</p><p className="mt-1 text-xs leading-5 text-slate-400">{user.plan === "FREE" ? "Interview, skill and learning tools are Premium." : "All application tools are available."}</p></div></aside><div className="lg:pl-64"><header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-5 sm:px-8"><Link href="/dashboard" className="text-lg font-bold lg:hidden">Career<span className="text-indigo-600">Pilot</span></Link><nav className="hidden gap-5 lg:flex">{nav.map(item => <Link key={item.href} href={item.href} className={`text-sm ${path === item.href ? "font-semibold text-indigo-700" : "text-slate-500"}`}>{item.label}</Link>)}</nav><div className="ml-auto flex items-center gap-3"><span className="hidden text-right text-sm sm:block"><b className="block font-medium">{user.name}</b><span className="text-xs text-slate-500">{user.plan}</span></span><button onClick={logout} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium hover:bg-slate-50">Sign out</button></div></header>{children}</div></div>;
+}

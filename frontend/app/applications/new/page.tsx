@@ -1,0 +1,2 @@
+import { AppShell } from "@/components/app-shell"; import { ApplicationForm } from "@/components/application-form";
+export default function NewApplication() { return <AppShell><main className="mx-auto max-w-3xl px-5 py-8 sm:px-8"><p className="text-sm font-medium text-indigo-600">NEW APPLICATION</p><h1 className="mt-1 text-3xl font-bold">Add an opportunity</h1><p className="mt-2 text-slate-500">Create a dedicated workspace for this role.</p><section className="mt-8 rounded-xl border border-slate-200 bg-white p-6 sm:p-8"><ApplicationForm /></section></main></AppShell>; }
