@@ -1,9 +1,3 @@
-import os
-import tempfile
-
-os.environ["DATABASE_URL"] = "sqlite:///" + tempfile.mktemp(suffix=".db")
-os.environ["JWT_SECRET_KEY"] = "test-secret-that-is-long-enough-for-development-only"
-
 from fastapi.testclient import TestClient  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import engine  # noqa: E402
