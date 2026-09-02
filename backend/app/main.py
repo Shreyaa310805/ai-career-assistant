@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import access, applications, auth
+from app.api.routes import access, applications, auth, career
 from app.core.config import get_settings
 from app.api.routes.resumes import router as resumes_router
 from app.db.resume_session import init_db as init_resume_db
@@ -33,6 +33,7 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(access.router, prefix="/api/v1")
 app.include_router(applications.router, prefix="/api/v1")
 app.include_router(resumes_router, prefix="/api/v1")
+app.include_router(career.router, prefix="/api/v1")
 
 
 @app.exception_handler(ApiError)
