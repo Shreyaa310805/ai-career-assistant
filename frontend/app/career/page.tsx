@@ -1,0 +1,41 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { AppShell } from "@/components/app-shell";
+import { getCareerRoadmap, type CareerRoadmap } from "@/lib/career";
+
+const priorityStyle = { High: "bg-rose-100 text-rose-700", Medium: "bg-amber-100 text-amber-700", Low: "bg-emerald-100 text-emerald-700" };
+
+export default function CareerPage() {
+  const [roadmap, setRoadmap] = useState<CareerRoadmap | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refresh, setRefresh] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15_000);
+    setLoading(true); setError(null);
+    getCareerRoadmap(controller.signal).then(setRoadmap).catch(() => {
+      if (!controller.signal.aborted) setError("We couldn't load your career roadmap. Make sure the Career Intelligence API is running.");
+      else setError("The career roadmap request timed out. Please try again.");
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => { window.clearTimeout(timeout); controller.abort(); };
+  }, [refresh]);
+
+  return <AppShell><main className="mx-auto max-w-6xl px-5 py-8 sm:px-8">
+    <p className="text-sm font-semibold text-indigo-600">CAREER INTELLIGENCE</p>
+    <div className="mt-1 flex flex-wrap items-start justify-between gap-5"><div><h1 className="text-3xl font-bold tracking-tight">Your Career Growth Dashboard</h1><p className="mt-2 text-slate-500">Understand your skill gaps and build your path toward your target role.</p></div>{roadmap && <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-5 py-3"><p className="text-xs font-semibold text-indigo-600">TARGET ROLE</p><p className="font-semibold">{roadmap.role}</p><p className="text-sm text-slate-600">{roadmap.company}</p></div>}</div>
+    {loading && <div className="py-20 text-center text-slate-500">Loading your career intelligence…</div>}
+    {error && <div className="mt-8 rounded-xl border border-rose-200 bg-rose-50 p-5 text-rose-800"><p className="font-semibold">Something went wrong</p><p className="mt-1 text-sm">{error}</p><button onClick={() => setRefresh((value) => value + 1)} className="mt-4 rounded-lg bg-rose-700 px-3 py-2 text-sm font-semibold text-white">Try again</button></div>}
+    {roadmap && !loading && <div className="mt-8 space-y-8"><section className="grid gap-4 sm:grid-cols-3">{[["Current match", `${roadmap.current_match_score}%`], ["Missing skills", roadmap.skill_gap.skill_gap_count], ["Matched skills", roadmap.skill_gap.matched_skills.length]].map(([label, value]) => <article key={String(label)} className="rounded-xl border border-slate-200 bg-white p-5"><p className="text-sm text-slate-500">{label}</p><p className="mt-2 text-3xl font-bold">{value}</p></article>)}</section>
+      <section className="rounded-xl border border-slate-200 bg-white p-6"><h2 className="text-xl font-bold">Skill Gap Analysis</h2><div className="mt-5 grid gap-5 md:grid-cols-3"><SkillList title="Matched skills" skills={roadmap.skill_gap.matched_skills} tone="bg-emerald-50 text-emerald-700" /><SkillList title="Skills to develop" skills={roadmap.skill_gap.missing_skills} tone="bg-rose-50 text-rose-700" /><SkillList title="Additional skills" skills={roadmap.skill_gap.extra_skills} tone="bg-slate-100 text-slate-700" /></div></section>
+      <section className="rounded-xl border border-slate-200 bg-white p-6"><h2 className="text-xl font-bold">Skill Priority</h2><div className="mt-5 grid gap-4 md:grid-cols-2">{roadmap.prioritized_skills.map((item) => <article key={item.skill} className="rounded-lg border border-slate-200 p-4"><div className="flex justify-between gap-3"><h3 className="font-semibold">{item.skill}</h3><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${priorityStyle[item.priority]}`}>{item.priority}</span></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-indigo-600" style={{ width: `${Math.round(item.priority_score * 100)}%` }} /></div><p className="mt-2 text-sm text-slate-500">{item.reason}</p></article>)}</div></section>
+      <section className="rounded-xl border border-slate-200 bg-white p-6"><h2 className="text-xl font-bold">Learning Recommendations</h2><div className="mt-5 space-y-5">{roadmap.recommendations.map((recommendation) => <div key={recommendation.skill}><h3 className="font-semibold">{recommendation.skill}</h3><div className="mt-2 grid gap-3 md:grid-cols-2">{recommendation.resources.map((resource) => <a key={resource.url} href={resource.url} target="_blank" rel="noreferrer" className="rounded-lg border border-slate-200 p-4 hover:border-indigo-300"><p className="font-medium">{resource.title}</p><p className="mt-1 text-sm text-slate-500">{resource.provider} · {resource.difficulty}</p></a>)}</div></div>)}</div></section>
+    </div>}
+  </main></AppShell>;
+}
+
+function SkillList({ title, skills, tone }: { title: string; skills: string[]; tone: string }) {
+  return <div><h3 className="font-semibold">{title}</h3><div className="mt-3 flex flex-wrap gap-2">{skills.length ? skills.map((skill) => <span key={skill} className={`rounded-full px-3 py-1 text-sm ${tone}`}>{skill}</span>) : <span className="text-sm text-slate-500">None</span>}</div></div>;
+}
