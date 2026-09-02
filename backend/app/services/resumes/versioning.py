@@ -7,8 +7,8 @@ ISSUE-19 — Best-version selection.
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AtsReport, Resume
-from app.schemas import ParsedResumeData, VersionDiff
+from app.models.resume import AtsReport, Resume
+from app.schemas.resume import ParsedResumeData, VersionDiff
 
 
 async def next_version_number(db: AsyncSession, application_id: str) -> int:

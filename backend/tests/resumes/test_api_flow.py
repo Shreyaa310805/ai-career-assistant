@@ -6,8 +6,7 @@ import uuid
 import pytest
 
 
-async def test_full_resume_lifecycle(client, sample_resume_pdf_bytes, sample_resume_docx_bytes, sample_jd_text):
-    application_id = str(uuid.uuid4())
+async def test_full_resume_lifecycle(client, application_id, sample_resume_pdf_bytes, sample_resume_docx_bytes, sample_jd_text):
 
     # --- Upload v1 (PDF) ---------------------------------------------------
     resp = await client.post(
@@ -22,7 +21,9 @@ async def test_full_resume_lifecycle(client, sample_resume_pdf_bytes, sample_res
     v1 = body["data"]
     assert v1["version_number"] == 1
     assert v1["application_id"] == application_id
-    assert v1["parsed_data"]["email"] == "jane.doe@example.com"
+    # Contact identity fields are extracted server-side but intentionally not
+    # returned in the client-safe parsed_data payload.
+    assert "email" not in v1["parsed_data"]
     assert "Python" in v1["parsed_data"]["skills"]
     resume_id_v1 = v1["resume_id"]
 
@@ -46,11 +47,7 @@ async def test_full_resume_lifecycle(client, sample_resume_pdf_bytes, sample_res
     # --- Analyze v1 against a JD -------------------------------------------
     resp = await client.post(
         "/api/v1/resumes/analyze",
-        json={
-            "application_id": application_id,
-            "resume_id": resume_id_v1,
-            "jd_text": sample_jd_text,
-        },
+        data={"application_id": application_id, "resume_id": resume_id_v1, "jd_text": sample_jd_text},
     )
     assert resp.status_code == 200, resp.text
     analysis = resp.json()["data"]
@@ -65,11 +62,7 @@ async def test_full_resume_lifecycle(client, sample_resume_pdf_bytes, sample_res
     # --- Analyze v2 too, so compare() has scores for both versions --------
     resp = await client.post(
         "/api/v1/resumes/analyze",
-        json={
-            "application_id": application_id,
-            "resume_id": resume_id_v2,
-            "jd_text": sample_jd_text,
-        },
+        data={"application_id": application_id, "resume_id": resume_id_v2, "jd_text": sample_jd_text},
     )
     assert resp.status_code == 200, resp.text
 
@@ -109,11 +102,11 @@ async def test_full_resume_lifecycle(client, sample_resume_pdf_bytes, sample_res
     assert flags == {1: False, 2: True}
 
 
-async def test_upload_rejects_unsupported_file_type(client):
+async def test_upload_rejects_unsupported_file_type(client, application_id):
     resp = await client.post(
         "/api/v1/resumes/upload",
         files={"file": ("resume.txt", b"hello", "text/plain")},
-        data={"application_id": str(uuid.uuid4())},
+        data={"application_id": application_id},
     )
     assert resp.status_code == 415
     body = resp.json()
@@ -131,22 +124,21 @@ async def test_upload_rejects_invalid_application_id(client, sample_resume_pdf_b
     assert resp.json()["error"]["code"] == "INVALID_REQUEST"
 
 
-async def test_analyze_returns_404_for_unknown_resume(client, sample_jd_text):
+async def test_analyze_returns_404_for_unknown_resume(client, application_id, sample_jd_text):
     resp = await client.post(
         "/api/v1/resumes/analyze",
-        json={
-            "application_id": str(uuid.uuid4()),
-            "resume_id": str(uuid.uuid4()),
-            "jd_text": sample_jd_text,
-        },
+        data={"application_id": application_id, "resume_id": str(uuid.uuid4()), "jd_text": sample_jd_text},
     )
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "RESUME_NOT_FOUND"
 
 
-async def test_analyze_rejects_mismatched_application(client, sample_resume_pdf_bytes, sample_jd_text):
-    application_id = str(uuid.uuid4())
-    other_application_id = str(uuid.uuid4())
+async def test_analyze_rejects_mismatched_application(client, application_id, sample_resume_pdf_bytes, sample_jd_text):
+    other = await client.post(
+        "/api/v1/applications",
+        json={"company": "Other Company", "role": "Other Role"},
+    )
+    other_application_id = other.json()["id"]
     resp = await client.post(
         "/api/v1/resumes/upload",
         files={"file": ("resume.pdf", sample_resume_pdf_bytes, "application/pdf")},
@@ -156,23 +148,18 @@ async def test_analyze_rejects_mismatched_application(client, sample_resume_pdf_
 
     resp = await client.post(
         "/api/v1/resumes/analyze",
-        json={
-            "application_id": other_application_id,
-            "resume_id": resume_id,
-            "jd_text": sample_jd_text,
-        },
+        data={"application_id": other_application_id, "resume_id": resume_id, "jd_text": sample_jd_text},
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "APPLICATION_MISMATCH"
 
 
-async def test_versions_empty_list_for_unknown_application(client):
+async def test_versions_requires_owned_application(client):
     resp = await client.get(f"/api/v1/resumes/versions/{uuid.uuid4()}")
-    assert resp.status_code == 200
-    assert resp.json()["data"]["versions"] == []
+    assert resp.status_code == 404
 
 
 async def test_health_endpoint(client):
     resp = await client.get("/health")
     assert resp.status_code == 200
-    assert resp.json()["success"] is True
+    assert resp.json() == {"status": "ok"}

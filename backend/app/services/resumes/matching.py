@@ -1,6 +1,6 @@
 """ISSUE-15 — JD <-> resume skill matching. Pure functions, taxonomy-aware
 (so "AWS" vs "Amazon Web Services" still match), used by ats_engine.py."""
-from app.services.taxonomy import dedupe_normalized
+from app.services.resumes.taxonomy import dedupe_normalized
 
 
 def match_skills(resume_skills: list[str], jd_skills: list[str]) -> tuple[list[str], list[str]]:

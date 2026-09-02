@@ -1,7 +1,7 @@
 import pytest
 
-from app.exceptions import ExtractionError, UnsupportedFileTypeError
-from app.services.extraction import (
+from app.services.resumes.exceptions import ExtractionError, UnsupportedFileTypeError
+from app.services.resumes.extraction import (
     extract_jd_text,
     extract_text,
     extract_text_from_docx,

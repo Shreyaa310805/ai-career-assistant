@@ -20,7 +20,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.types import JSON, CHAR, TypeDecorator
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.database import Base
+from app.db.resume_session import Base
 
 
 def _uuid_str() -> str:

@@ -33,6 +33,19 @@ class ParsedResumeData(BaseModel):
     education: list[str] = Field(default_factory=list)
 
 
+class ResumeDetails(BaseModel):
+    """Client-safe subset of parsed resume data.
+
+    Identity/contact fields remain in the protected server-side record only;
+    the UI needs skills and career information to render the ATS workflow.
+    """
+
+    skills: list[str] = Field(default_factory=list)
+    experience_years: float = 0.0
+    work_history: list[WorkHistoryItem] = Field(default_factory=list)
+    education: list[str] = Field(default_factory=list)
+
+
 class ParsedJDData(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -77,9 +90,7 @@ class UploadResumeResponse(BaseModel):
     resume_id: str
     application_id: str
     version_number: int
-    file_url: str
-    raw_text: str
-    parsed_data: ParsedResumeData
+    parsed_data: ResumeDetails
 
 
 class AnalyzeResumeResponse(BaseModel):
@@ -91,6 +102,7 @@ class AnalyzeResumeResponse(BaseModel):
     matched_skills: list[str]
     missing_skills: list[str]
     improvement_suggestions: list[ImprovementSuggestion]
+    jd_details: ParsedJDData
 
 
 class LatestAtsSummary(BaseModel):
@@ -107,7 +119,7 @@ class ResumeVersionSummary(BaseModel):
     file_url: str
     is_best_version: bool
     created_at: datetime
-    parsed_data: ParsedResumeData
+    parsed_data: ResumeDetails
     latest_ats_report: LatestAtsSummary | None = None
 
 

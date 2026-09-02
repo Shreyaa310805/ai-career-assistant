@@ -1,8 +1,8 @@
-from app.schemas import ParsedJDData, ParsedResumeData, WorkHistoryItem
-from app.services.ats_engine import calculate_ats_score, calculate_match_score, generate_suggestions
-from app.services.gemini_service import heuristic_parse_jd, heuristic_parse_resume
-from app.services.matching import match_skills
-from tests.conftest import SAMPLE_RESUME_TEXT_LINES
+from app.schemas.resume import ParsedJDData, ParsedResumeData, WorkHistoryItem
+from app.services.resumes.ats_engine import calculate_ats_score, calculate_match_score, generate_suggestions
+from app.services.resumes.gemini_service import heuristic_parse_jd, heuristic_parse_resume
+from app.services.resumes.matching import match_skills
+from tests.resumes.conftest import SAMPLE_RESUME_TEXT_LINES
 
 
 def test_heuristic_parse_resume_extracts_core_fields():

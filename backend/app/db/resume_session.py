@@ -14,17 +14,17 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
-from app.config import get_settings
+from app.core.config import get_settings
 
 settings = get_settings()
 
 _connect_args = {}
-if settings.database_url.startswith("sqlite"):
+if settings.resume_database_url.startswith("sqlite"):
     # allow the aiosqlite connection to be shared across the async test client
     _connect_args = {"check_same_thread": False}
 
 engine = create_async_engine(
-    settings.database_url,
+    settings.resume_database_url,
     echo=False,
     connect_args=_connect_args,
     future=True,

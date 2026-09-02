@@ -3,6 +3,7 @@ StaticPool so the single in-memory connection is shared across the async
 test client's requests), sample resume/JD fixtures, and an httpx
 AsyncClient wired to the FastAPI app with get_db overridden."""
 import io
+import uuid
 
 import docx
 import fitz
@@ -12,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.database import Base, get_db
+from app.db.resume_session import Base, get_db
 from app.main import app
 
 
@@ -42,8 +43,27 @@ async def client(db_session_factory):
     app.dependency_overrides[get_db] = _override_get_db
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        registration = await ac.post(
+            "/api/v1/auth/register",
+            json={
+                "name": "Resume Tester",
+                "email": f"resume-{uuid.uuid4()}@example.com",
+                "password": "correct-horse-battery",
+            },
+        )
+        ac.headers["Authorization"] = f"Bearer {registration.json()['access_token']}"
         yield ac
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def application_id(client):
+    response = await client.post(
+        "/api/v1/applications",
+        json={"company": "Test Company", "role": "Software Engineer"},
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
 
 
 # --------------------------------------------------------------------- #

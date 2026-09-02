@@ -19,9 +19,9 @@ import json
 import logging
 import re
 
-from app.config import get_settings
-from app.schemas import ParsedJDData, ParsedResumeData, WorkHistoryItem
-from app.services.taxonomy import extract_skills_from_text
+from app.core.config import get_settings
+from app.schemas.resume import ParsedJDData, ParsedResumeData, WorkHistoryItem
+from app.services.resumes.taxonomy import extract_skills_from_text
 
 logger = logging.getLogger(__name__)
 settings = get_settings()

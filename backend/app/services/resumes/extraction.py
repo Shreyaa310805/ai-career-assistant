@@ -14,7 +14,7 @@ import re
 import docx  # python-docx
 import fitz  # PyMuPDF
 
-from app.exceptions import ExtractionError, UnsupportedFileTypeError
+from app.services.resumes.exceptions import ExtractionError, UnsupportedFileTypeError
 
 RESUME_EXTENSIONS = {".pdf", ".docx"}
 JD_EXTENSIONS = {".pdf", ".docx", ".txt"}
@@ -119,6 +119,14 @@ def extract_jd_file(file_bytes: bytes, filename: str, content_type: str | None =
             "(it may be a scanned/image-only document)."
         )
     return text
+
+
+def extract_jd_text(text: str) -> str:
+    """Normalize pasted job-description text using the same validation."""
+    normalized = _normalize_text(text)
+    if not normalized:
+        raise ExtractionError("Job description text is empty.")
+    return normalized
 
 
 def _normalize_text(text: str) -> str:

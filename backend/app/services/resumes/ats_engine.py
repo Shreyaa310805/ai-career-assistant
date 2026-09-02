@@ -14,8 +14,8 @@ concrete, actionable feedback.
 """
 import re
 
-from app.schemas import ImprovementSuggestion, ParsedJDData, ParsedResumeData
-from app.services.matching import match_skills
+from app.schemas.resume import ImprovementSuggestion, ParsedJDData, ParsedResumeData
+from app.services.resumes.matching import match_skills
 
 _BULLET_RE = re.compile(r"^[\s]*[-*•●▪]\s+")
 _METRIC_RE = re.compile(r"\d")

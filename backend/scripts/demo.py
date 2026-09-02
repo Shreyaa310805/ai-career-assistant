@@ -22,13 +22,13 @@ import fitz
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.database import Base
-from app.models import AtsReport, Resume
-from app.services.ats_engine import calculate_ats_score, calculate_match_score, generate_suggestions
-from app.services.extraction import extract_jd_text, extract_text_from_pdf
-from app.services.gemini_service import get_gemini_service
-from app.services.storage import new_resume_id
-from app.services.versioning import diff_versions, recommend_version
+from app.db.resume_session import Base
+from app.models.resume import AtsReport, Resume
+from app.services.resumes.ats_engine import calculate_ats_score, calculate_match_score, generate_suggestions
+from app.services.resumes.extraction import extract_jd_text, extract_text_from_pdf
+from app.services.resumes.gemini_service import get_gemini_service
+from app.services.resumes.storage import new_resume_id
+from app.services.resumes.versioning import diff_versions, recommend_version
 
 SAMPLE_RESUME_LINES = [
     "Jane Doe",

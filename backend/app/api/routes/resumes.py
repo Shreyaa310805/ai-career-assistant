@@ -18,36 +18,50 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
-from app.database import get_db
-from app.exceptions import (
+from app.api.deps import CurrentUser, DbSession
+from app.models.application import Application
+
+from app.core.config import get_settings
+from app.db.resume_session import get_db
+from app.services.resumes.exceptions import (
     ApplicationMismatchError,
     FileTooLargeError,
     InvalidRequestError,
     ResumeNotFoundError,
 )
-from app.models import AtsReport, Resume
-from app.response import success_response
-from app.schemas import (
+from app.models.resume import AtsReport, Resume
+from app.services.resumes.response import success_response
+from app.schemas.resume import (
     AnalyzeResumeResponse,
     CompareRequest,
     CompareResumesResponse,
     LatestAtsSummary,
     ParsedResumeData,
     ResumeVersionSummary,
+    ResumeDetails,
     SelectBestRequest,
     SelectBestResponse,
     UploadResumeResponse,
     VersionListResponse,
 )
-from app.services.ats_engine import calculate_ats_score, calculate_match_score, generate_suggestions
-from app.services.extraction import extract_jd_file, extract_text
-from app.services.gemini_service import get_gemini_service
-from app.services.storage import get_storage_backend, new_resume_id
-from app.services.versioning import diff_versions, get_latest_ats_report, next_version_number, recommend_version
+from app.services.resumes.ats_engine import calculate_ats_score, calculate_match_score, generate_suggestions
+from app.services.resumes.extraction import extract_jd_file, extract_jd_text, extract_text
+from app.services.resumes.gemini_service import get_gemini_service
+from app.services.resumes.storage import get_storage_backend, new_resume_id
+from app.services.resumes.versioning import diff_versions, get_latest_ats_report, next_version_number, recommend_version
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 settings = get_settings()
+
+
+def _public_resume_details(parsed: ParsedResumeData) -> ResumeDetails:
+    """Do not return contact/identity data extracted from a resume."""
+    return ResumeDetails(
+        skills=parsed.skills,
+        experience_years=parsed.experience_years,
+        work_history=parsed.work_history,
+        education=parsed.education,
+    )
 
 
 def _validate_uuid(value: str, field_name: str) -> str:
@@ -55,6 +69,16 @@ def _validate_uuid(value: str, field_name: str) -> str:
         return str(uuid.UUID(str(value)))
     except (ValueError, AttributeError, TypeError):
         raise InvalidRequestError(f"'{field_name}' must be a valid UUID.")
+
+
+def _require_owned_application(application_id: str, current_user: CurrentUser, db: DbSession) -> None:
+    """Bind resume records to an application owned by the current user."""
+    application = db.get(Application, uuid.UUID(application_id))
+    if application is None:
+        # Keep the response deliberately non-specific, matching application routes.
+        raise ResumeNotFoundError("No application found for this resume operation.")
+    if application.user_id != current_user.id:
+        raise ResumeNotFoundError("No application found for this resume operation.")
 
 
 async def _get_resume_or_404(db: AsyncSession, resume_id: str) -> Resume:
@@ -74,7 +98,7 @@ def _resume_to_summary(resume: Resume, latest_report: AtsReport | None) -> Resum
         file_url=resume.file_url,
         is_best_version=resume.is_best_version,
         created_at=resume.created_at,
-        parsed_data=ParsedResumeData.model_validate(resume.parsed_data),
+        parsed_data=_public_resume_details(ParsedResumeData.model_validate(resume.parsed_data)),
         latest_ats_report=(
             LatestAtsSummary(
                 report_id=latest_report.id,
@@ -93,11 +117,14 @@ def _resume_to_summary(resume: Resume, latest_report: AtsReport | None) -> Resum
 # --------------------------------------------------------------------------
 @router.post("/upload")
 async def upload_resume(
+    current_user: CurrentUser,
+    application_db: DbSession,
     file: UploadFile = File(...),
     application_id: str = Form(...),
     db: AsyncSession = Depends(get_db),
 ):
     application_id = _validate_uuid(application_id, "application_id")
+    _require_owned_application(application_id, current_user, application_db)
 
     file_bytes = await file.read()
     if len(file_bytes) > settings.max_upload_bytes:
@@ -136,9 +163,7 @@ async def upload_resume(
         resume_id=resume.id,
         application_id=resume.application_id,
         version_number=resume.version_number,
-        file_url=resume.file_url,
-        raw_text=resume.raw_text,
-        parsed_data=parsed,
+        parsed_data=_public_resume_details(parsed),
     )
     return success_response(payload.model_dump(mode="json"))
 
@@ -148,12 +173,16 @@ async def upload_resume(
 # --------------------------------------------------------------------------
 @router.post("/analyze")
 async def analyze_resume(
-    jd_file: UploadFile = File(...),
+    current_user: CurrentUser,
+    application_db: DbSession,
+    jd_file: UploadFile | None = File(None),
+    jd_text: str | None = Form(None),
     application_id: str = Form(...),
     resume_id: str = Form(...),
     db: AsyncSession = Depends(get_db),
 ):
     application_id = _validate_uuid(application_id, "application_id")
+    _require_owned_application(application_id, current_user, application_db)
     resume = await _get_resume_or_404(db, resume_id)
 
     if resume.application_id != application_id:
@@ -161,18 +190,26 @@ async def analyze_resume(
             "resume_id does not belong to the given application_id."
         )
 
-    jd_bytes = await jd_file.read()
-    if len(jd_bytes) > settings.max_upload_bytes:
-        raise FileTooLargeError(
-            f"JD file exceeds the {settings.max_upload_mb}MB upload limit."
-        )
-    if len(jd_bytes) == 0:
-        raise InvalidRequestError("Uploaded JD file is empty.")
-
-    jd_text = extract_jd_file(jd_bytes, jd_file.filename or "", jd_file.content_type)
+    if jd_file is not None:
+        jd_bytes = await jd_file.read()
+        if len(jd_bytes) > settings.max_upload_bytes:
+            raise FileTooLargeError(
+                f"JD file exceeds the {settings.max_upload_mb}MB upload limit."
+            )
+        if len(jd_bytes) == 0:
+            raise InvalidRequestError("Uploaded JD file is empty.")
+        jd_content = extract_jd_file(jd_bytes, jd_file.filename or "", jd_file.content_type)
+    elif jd_text and jd_text.strip():
+        if len(jd_text.encode("utf-8")) > settings.max_upload_bytes:
+            raise FileTooLargeError(
+                f"Job description exceeds the {settings.max_upload_mb}MB upload limit."
+            )
+        jd_content = extract_jd_text(jd_text)
+    else:
+        raise InvalidRequestError("Provide a job description as text or a file.")
 
     gemini = get_gemini_service()
-    jd_parsed = gemini.parse_jd(jd_text)
+    jd_parsed = gemini.parse_jd(jd_content)
     resume_parsed = ParsedResumeData.model_validate(resume.parsed_data)
 
     ats_score, ats_components = calculate_ats_score(resume.raw_text, resume_parsed)
@@ -203,6 +240,7 @@ async def analyze_resume(
         matched_skills=matched_skills,
         missing_skills=missing_skills,
         improvement_suggestions=suggestions,
+        jd_details=jd_parsed,
     )
     return success_response(payload.model_dump(mode="json"))
 
@@ -211,8 +249,14 @@ async def analyze_resume(
 # 3. GET /resumes/versions/{application_id} — ISSUE-17
 # --------------------------------------------------------------------------
 @router.get("/versions/{application_id}")
-async def list_versions(application_id: str, db: AsyncSession = Depends(get_db)):
+async def list_versions(
+    application_id: str,
+    current_user: CurrentUser,
+    application_db: DbSession,
+    db: AsyncSession = Depends(get_db),
+):
     application_id = _validate_uuid(application_id, "application_id")
+    _require_owned_application(application_id, current_user, application_db)
 
     result = await db.execute(
         select(Resume)
@@ -234,7 +278,12 @@ async def list_versions(application_id: str, db: AsyncSession = Depends(get_db))
 # 4. POST /resumes/compare — ISSUE-18
 # --------------------------------------------------------------------------
 @router.post("/compare")
-async def compare_resumes(body: CompareRequest, db: AsyncSession = Depends(get_db)):
+async def compare_resumes(
+    body: CompareRequest,
+    current_user: CurrentUser,
+    application_db: DbSession,
+    db: AsyncSession = Depends(get_db),
+):
     resume_v1 = await _get_resume_or_404(db, body.resume_id_v1)
     resume_v2 = await _get_resume_or_404(db, body.resume_id_v2)
 
@@ -242,6 +291,7 @@ async def compare_resumes(body: CompareRequest, db: AsyncSession = Depends(get_d
         raise ApplicationMismatchError(
             "resume_id_v1 and resume_id_v2 must belong to the same application_id."
         )
+    _require_owned_application(resume_v1.application_id, current_user, application_db)
 
     parsed_v1 = ParsedResumeData.model_validate(resume_v1.parsed_data)
     parsed_v2 = ParsedResumeData.model_validate(resume_v2.parsed_data)
@@ -266,8 +316,14 @@ async def compare_resumes(body: CompareRequest, db: AsyncSession = Depends(get_d
 # 5. PATCH /resumes/select-best — ISSUE-19
 # --------------------------------------------------------------------------
 @router.patch("/select-best")
-async def select_best_version(body: SelectBestRequest, db: AsyncSession = Depends(get_db)):
+async def select_best_version(
+    body: SelectBestRequest,
+    current_user: CurrentUser,
+    application_db: DbSession,
+    db: AsyncSession = Depends(get_db),
+):
     application_id = _validate_uuid(body.application_id, "application_id")
+    _require_owned_application(application_id, current_user, application_db)
     best_resume = await _get_resume_or_404(db, body.best_resume_id)
 
     if best_resume.application_id != application_id:

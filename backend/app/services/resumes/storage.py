@@ -8,8 +8,8 @@ import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from app.config import get_settings
-from app.exceptions import StorageError
+from app.core.config import get_settings
+from app.services.resumes.exceptions import StorageError
 
 settings = get_settings()
 
@@ -17,27 +17,27 @@ settings = get_settings()
 class StorageBackend(ABC):
     @abstractmethod
     async def save(self, file_bytes: bytes, extension: str, resume_id: str) -> str:
-        """Persist the file and return a publicly-addressable file_url."""
+        """Persist the file and return a server-side storage identifier."""
 
 
 class LocalMockStorage(StorageBackend):
-    """Writes to STORAGE_LOCAL_DIR and fabricates a URL shaped like the
-    real Supabase/Cloudinary public URL the frontend expects
-    (see the upload endpoint contract's `file_url` example)."""
+    """Writes private uploaded files to STORAGE_LOCAL_DIR."""
 
     def __init__(self) -> None:
         self.base_dir = Path(settings.storage_local_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.base_dir.chmod(0o700)
 
     async def save(self, file_bytes: bytes, extension: str, resume_id: str) -> str:
         filename = f"{resume_id}{extension}"
         path = self.base_dir / filename
         try:
             path.write_bytes(file_bytes)
+            path.chmod(0o600)
         except OSError as exc:
             raise StorageError(f"Failed to persist uploaded file: {exc}") from exc
-        base = settings.storage_public_base_url.rstrip("/")
-        return f"{base}/{filename}"
+        # The file is never exposed through a public URL.
+        return f"local://resumes/{filename}"
 
 
 class SupabaseStorage(StorageBackend):
