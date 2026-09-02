@@ -103,3 +103,126 @@ def dedupe_normalized(skills: list[str]) -> list[str]:
             seen.add(key)
             out.append(canonical)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Open-vocabulary skill discovery
+#
+# The synonym map above is a *canonicalization* layer, not the universe of
+# skills. Restricting extraction to it meant anything it had never heard of
+# ("Snowflake", "dbt", "Airflow") was silently dropped from both the resume
+# and the JD, which is what made match scores look pre-baked. The functions
+# below read the document's own skills/requirements sections and keep the
+# candidates found there, whether or not the taxonomy recognizes them.
+# ---------------------------------------------------------------------------
+
+_SECTION_HEADER_RE = re.compile(
+    r"^\s*(?:[-•*]\s*)?"
+    r"(technical skills|core competencies|technologies|tech stack|tools|skills"
+    r"|requirements|required skills|qualifications|minimum qualifications"
+    r"|what you.ll need|must have|preferred qualifications|preferred skills"
+    r"|nice to have|bonus points|good to have)"
+    r"\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+# A header that ends a skills/requirements block.
+_TERMINATING_HEADER_RE = re.compile(
+    r"^\s*(?:experience|work experience|professional experience|employment"
+    r"|education|academic background|projects|certifications|responsibilities"
+    r"|what you.ll do|about us|about the role|benefits|perks|summary|objective"
+    r"|awards|publications|interests|references)\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+_CANDIDATE_SPLIT_RE = re.compile(r"[,;|/•·]|\s+and\s+|\s{3,}")
+
+# Words that signal prose rather than a skill name.
+_PROSE_MARKERS = {
+    "the", "and", "with", "you", "your", "our", "we", "will", "have", "has",
+    "are", "is", "be", "to", "of", "in", "for", "on", "as", "an", "a", "or",
+    "that", "this", "their", "them", "who", "able", "ability", "years", "year",
+    "experience", "strong", "excellent", "good", "solid", "proven", "working",
+    "knowledge", "understanding", "familiarity", "proficiency", "proficient",
+    "skills", "skill", "plus", "must", "should", "would", "can", "using",
+    "such", "etc", "including", "e.g", "i.e", "at", "least", "minimum",
+}
+
+_ALLOWED_SKILL_CHARS_RE = re.compile(r"^[A-Za-z0-9 .+#/&_'\-]+$")
+
+
+def _is_plausible_skill(candidate: str) -> bool:
+    """Reject prose fragments; keep short, noun-phrase-shaped tokens."""
+    text = candidate.strip(" \t.:;-–—•*()[]")
+    if not (2 <= len(text) <= 40):
+        return False
+    if not _ALLOWED_SKILL_CHARS_RE.match(text):
+        return False
+    words = text.split()
+    if not (1 <= len(words) <= 4):
+        return False
+    lowered = [w.lower().strip(".,") for w in words]
+    # A phrase built mostly of filler words is a sentence fragment, not a skill.
+    if sum(1 for w in lowered if w in _PROSE_MARKERS) > len(lowered) / 2:
+        return False
+    if len(words) == 1 and lowered[0] in _PROSE_MARKERS:
+        return False
+    # Require at least one letter; pure version numbers or years are noise.
+    if not any(ch.isalpha() for ch in text):
+        return False
+    return True
+
+
+def _iter_section_bodies(text: str):
+    """Yield the lines belonging to each skills/requirements section."""
+    lines = text.split("\n")
+    index = 0
+    while index < len(lines):
+        if _SECTION_HEADER_RE.match(lines[index]):
+            body: list[str] = []
+            index += 1
+            while index < len(lines):
+                line = lines[index]
+                if _SECTION_HEADER_RE.match(line) or _TERMINATING_HEADER_RE.match(line):
+                    break
+                if line.strip():
+                    body.append(line)
+                elif body:
+                    # A blank line ends an inline skills list.
+                    break
+                index += 1
+            if body:
+                yield body
+            continue
+        index += 1
+
+
+def extract_skills_from_sections(text: str) -> list[str]:
+    """Collect skill candidates from the document's own skills/requirements
+    sections, normalized through the taxonomy but not limited to it."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for body in _iter_section_bodies(text):
+        for line in body:
+            stripped = line.strip(" \t-•*·")
+            for raw in _CANDIDATE_SPLIT_RE.split(stripped):
+                if not _is_plausible_skill(raw):
+                    continue
+                canonical = normalize_skill(raw.strip(" \t.:;-–—•*()[]"))
+                key = canonical.lower()
+                if key not in seen:
+                    seen.add(key)
+                    found.append(canonical)
+    return found
+
+
+def extract_all_skills(text: str) -> list[str]:
+    """Union of taxonomy keyword-spotting and open-vocabulary section
+    discovery, de-duplicated on canonical name in first-seen order.
+
+    Taxonomy hits come first: they are the highest-confidence signal and the
+    ordering matters downstream (matched/missing lists are displayed in this
+    order, and career.py treats position as a relevance proxy)."""
+    return dedupe_normalized(
+        [*extract_skills_from_text(text), *extract_skills_from_sections(text)]
+    )

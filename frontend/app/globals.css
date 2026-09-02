@@ -3,7 +3,63 @@
 @tailwind utilities;
 
 @layer base {
-  * { box-sizing: border-box; }
-  body { @apply m-0 bg-slate-950 text-slate-100 antialiased; }
-  input { @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-slate-900 outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20; }
+  /* Data-visualization tokens.
+     Categorical slots 1-3 are the validated trio (all-pairs CVD dE 9.2,
+     normal-vision 24.0 on a light surface). Status colors are reserved for
+     good/warning/critical readings and never carry meaning without an
+     accompanying text label. This app is light-mode only by design. */
+  :root {
+    --viz-series-1: #2a78d6;
+    --viz-series-2: #eb6834;
+    --viz-series-3: #1baf7a;
+    --viz-good: #0ca30c;
+    --viz-warning: #fab219;
+    --viz-critical: #d03b3b;
+    --viz-track: #eef2f6;
+    --viz-surface: #ffffff;
+    --viz-grid: #e2e8f0;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply m-0 bg-surface-muted font-sans text-slate-900 antialiased;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-500/40 ring-offset-2 ring-offset-white;
+  }
+
+  /* Respect users who have asked the OS to reduce motion. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .field {
+    @apply w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-slate-900 shadow-xs outline-none transition
+           placeholder:text-slate-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10
+           disabled:cursor-not-allowed disabled:bg-surface-sunken disabled:text-slate-500;
+  }
+
+  .label {
+    @apply block text-sm font-medium text-slate-700;
+  }
 }

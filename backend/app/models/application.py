@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, String, Text, Uuid, func
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, String, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -12,7 +12,9 @@ class ApplicationStatus(str, enum.Enum):
     SAVED = "SAVED"
     APPLIED = "APPLIED"
     INTERVIEWING = "INTERVIEWING"
+    SELECTED = "SELECTED"
     OFFER = "OFFER"
+    OFFER_DECLINED = "OFFER_DECLINED"
     REJECTED = "REJECTED"
 
 
@@ -28,6 +30,10 @@ class Application(Base):
     job_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     job_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     applied_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # A scratch application backs the FREE-tier quick scan. It exists only so
+    # the frozen application-scoped /resumes contract has something to bind to,
+    # and is filtered out of every user-facing application query.
+    is_scratch: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 

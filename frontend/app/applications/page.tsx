@@ -1,4 +1,78 @@
 "use client";
-import Link from "next/link"; import { useEffect, useState } from "react"; import { AppShell } from "@/components/app-shell"; import { getApplications, type Application } from "@/lib/applications";
-const colors: Record<string, string> = { SAVED: "bg-slate-100 text-slate-600", APPLIED: "bg-blue-50 text-blue-700", INTERVIEWING: "bg-amber-50 text-amber-700", OFFER: "bg-emerald-50 text-emerald-700", REJECTED: "bg-rose-50 text-rose-700" };
-export default function ApplicationsPage() { const [apps, setApps] = useState<Application[]>([]); useEffect(() => { getApplications().then(setApps); }, []); return <AppShell><main className="mx-auto max-w-6xl px-5 py-8 sm:px-8"><div className="flex items-end justify-between gap-4"><div><p className="text-sm font-medium text-indigo-600">APPLICATIONS</p><h1 className="mt-1 text-3xl font-bold tracking-tight">Your opportunity pipeline</h1></div><Link href="/applications/new" className="rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700">+ Add application</Link></div><div className="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white">{apps.length ? <div className="divide-y divide-slate-100">{apps.map(app => <Link href={`/applications/${app.id}`} key={app.id} className="grid gap-3 px-5 py-4 hover:bg-slate-50 sm:grid-cols-[1.5fr_1fr_auto] sm:items-center"><span><b className="block">{app.role}</b><span className="text-sm text-slate-500">{app.company}</span></span><span className="text-sm text-slate-500">{app.location || "Location not set"}</span><span className={`w-fit rounded-full px-2.5 py-1 text-xs font-semibold ${colors[app.status]}`}>{app.status.replace("_", " ")}</span></Link>)}</div> : <div className="px-6 py-20 text-center"><h2 className="font-semibold">Build your pipeline</h2><p className="mt-2 text-sm text-slate-500">Track roles here, then open each workspace for role-specific preparation.</p><Link href="/applications/new" className="mt-5 inline-block text-sm font-semibold text-indigo-600">Add your first application →</Link></div>}</div></main></AppShell>; }
+
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { AppShell } from "@/components/app-shell";
+import { StatusBadge } from "@/components/status-badge";
+import { Card, EmptyState, LinkButton, SectionHeading, Skeleton } from "@/components/ui";
+import { getApplications, type Application } from "@/lib/applications";
+import { isPlanError } from "@/lib/auth";
+
+export default function ApplicationsPage() {
+  const [apps, setApps] = useState<Application[] | null>(null);
+  const [locked, setLocked] = useState(false);
+
+  useEffect(() => {
+    getApplications()
+      .then(setApps)
+      .catch((error) => {
+        if (isPlanError(error)) setLocked(true);
+        setApps([]);
+      });
+  }, []);
+
+  return (
+    <AppShell>
+      <main className="mx-auto max-w-6xl px-5 py-8 sm:px-8">
+        <SectionHeading
+          eyebrow="Applications"
+          title="Your opportunity pipeline"
+          description="Each application gets its own workspace for resume, ATS, skills and planning."
+          action={locked ? undefined : <LinkButton href="/applications/new">+ Add application</LinkButton>}
+        />
+
+        <div className="mt-8">
+          {locked ? (
+            <Card>
+              <EmptyState
+                title="The application tracker is a Premium feature"
+                description="Upgrade to track companies, roles, dates and status, and to open a dedicated workspace for each role."
+                action={<LinkButton href="/upgrade">Upgrade to Premium</LinkButton>}
+              />
+            </Card>
+          ) : apps === null ? (
+            <Skeleton className="h-64" />
+          ) : apps.length ? (
+            <Card className="overflow-hidden">
+              <ul className="divide-y divide-line">
+                {apps.map((app) => (
+                  <li key={app.id}>
+                    <Link
+                      href={`/applications/${app.id}`}
+                      className="grid gap-3 px-5 py-4 transition-colors hover:bg-surface-muted sm:grid-cols-[1.6fr_1fr_auto] sm:items-center"
+                    >
+                      <span className="min-w-0">
+                        <b className="block truncate">{app.role}</b>
+                        <span className="text-sm text-slate-500">{app.company}</span>
+                      </span>
+                      <span className="text-sm text-slate-500">{app.location || "Location not set"}</span>
+                      <StatusBadge status={app.status} className="w-fit" />
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          ) : (
+            <Card>
+              <EmptyState
+                title="Build your pipeline"
+                description="Track roles here, then open each workspace for role-specific preparation."
+                action={<LinkButton href="/applications/new">Add your first application</LinkButton>}
+              />
+            </Card>
+          )}
+        </div>
+      </main>
+    </AppShell>
+  );
+}

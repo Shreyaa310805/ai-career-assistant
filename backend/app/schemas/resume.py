@@ -103,6 +103,10 @@ class AnalyzeResumeResponse(BaseModel):
     missing_skills: list[str]
     improvement_suggestions: list[ImprovementSuggestion]
     jd_details: ParsedJDData
+    # Additive, optional: the named sub-component scores the ATS engine already
+    # computes. Existing consumers that ignore them are unaffected.
+    ats_breakdown: dict[str, float] | None = None
+    match_breakdown: dict[str, float] | None = None
 
 
 class LatestAtsSummary(BaseModel):
@@ -110,6 +114,8 @@ class LatestAtsSummary(BaseModel):
     ats_score: float
     match_score: float
     created_at: datetime
+    ats_breakdown: dict[str, float] | None = None
+    match_breakdown: dict[str, float] | None = None
 
 
 class ResumeVersionSummary(BaseModel):

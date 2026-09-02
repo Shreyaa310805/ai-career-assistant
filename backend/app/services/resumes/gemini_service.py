@@ -18,10 +18,15 @@ work with no Gemini API key at all. So:
 import json
 import logging
 import re
+from datetime import date
 
 from app.core.config import get_settings
 from app.schemas.resume import ParsedJDData, ParsedResumeData, WorkHistoryItem
-from app.services.resumes.taxonomy import extract_skills_from_text
+from app.services.resumes.taxonomy import (
+    extract_all_skills,
+    extract_skills_from_sections,
+    extract_skills_from_text,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -30,6 +35,11 @@ _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 _PHONE_RE = re.compile(r"(\+?\d[\d\-\s().]{7,}\d)")
 _YEARS_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*\+?\s*years?\s*(?:of)?\s*(?:experience|exp)?", re.IGNORECASE
+)
+# Work-history date ranges, e.g. "2019 - 2023", "Jan 2021 - Present".
+_YEAR_RANGE_RE = re.compile(
+    r"(19\d{2}|20\d{2})\s*(?:[-–—]|to)\s*(19\d{2}|20\d{2}|present|current)",
+    re.IGNORECASE,
 )
 _EDU_KEYWORDS = (
     "bachelor", "b.s.", "bs ", "b.tech", "btech", "master", "m.s.", "ms ",
@@ -130,8 +140,12 @@ class GeminiService:
 def heuristic_parse_resume(raw_text: str) -> ParsedResumeData:
     email_match = _EMAIL_RE.search(raw_text)
     phone_match = _PHONE_RE.search(raw_text)
-    skills = extract_skills_from_text(raw_text)
+    skills = extract_all_skills(raw_text)
     experience_years = _estimate_experience_years(raw_text)
+    if experience_years == 0.0:
+        # No explicit "N years of experience" statement — derive a total
+        # from the work-history date ranges instead of scoring it as zero.
+        experience_years = _estimate_experience_from_dates(raw_text)
     education = _extract_education(raw_text)
     work_history = _extract_work_history(raw_text)
     candidate_name = _guess_candidate_name(raw_text)
@@ -147,22 +161,38 @@ def heuristic_parse_resume(raw_text: str) -> ParsedResumeData:
     )
 
 
+# Headers under which a listed skill is a nice-to-have rather than a must-have.
+_PREFERRED_HEADER_RE = re.compile(
+    r"^\s*(?:[-•*]\s*)?(preferred qualifications|preferred skills|nice to have"
+    r"|bonus points|good to have|preferred|bonus)\s*:?\s*$",
+    re.IGNORECASE,
+)
+_PREFERRED_INLINE_MARKERS = ("nice to have", "preferred", "bonus", "a plus", "good to have")
+
+
+def _split_preferred_block(jd_text: str) -> tuple[str, str]:
+    """Split a JD into (must-have text, nice-to-have text) on the first
+    preferred-qualifications header. Returns ("", "") when no such header
+    exists, so callers know to fall back to the inline-marker heuristic."""
+    lines = jd_text.split("\n")
+    for index, line in enumerate(lines):
+        if _PREFERRED_HEADER_RE.match(line):
+            return "\n".join(lines[:index]), "\n".join(lines[index:])
+    return "", ""
+
+
 def heuristic_parse_jd(jd_text: str) -> ParsedJDData:
-    skills = extract_skills_from_text(jd_text)
     min_years = _estimate_experience_years(jd_text)
 
-    required, preferred = [], []
-    lowered = jd_text.lower()
-    preferred_markers = ("nice to have", "preferred", "bonus", "a plus")
-    for skill in skills:
-        # crude heuristic: if the skill's mention is near a "preferred/nice
-        # to have" marker, bucket it as preferred; otherwise required.
-        idx = lowered.find(skill.lower())
-        window = lowered[max(0, idx - 60): idx + 60] if idx != -1 else ""
-        if any(m in window for m in preferred_markers):
-            preferred.append(skill)
-        else:
-            required.append(skill)
+    required_text, preferred_text = _split_preferred_block(jd_text)
+    if preferred_text:
+        # The JD labels its own sections — trust that over proximity guessing.
+        required = extract_all_skills(required_text)
+        preferred_all = extract_all_skills(preferred_text)
+        required_lower = {s.lower() for s in required}
+        preferred = [s for s in preferred_all if s.lower() not in required_lower]
+    else:
+        required, preferred = _bucket_by_inline_markers(jd_text)
 
     role_title = _guess_role_title(jd_text)
     responsibilities = _extract_bullets(jd_text)[:8]
@@ -176,6 +206,23 @@ def heuristic_parse_jd(jd_text: str) -> ParsedJDData:
     )
 
 
+def _bucket_by_inline_markers(jd_text: str) -> tuple[list[str], list[str]]:
+    """Fallback for unstructured JDs: a skill mentioned near "nice to have"
+    or "preferred" is treated as a preference, everything else as required."""
+    skills = extract_all_skills(jd_text)
+    lowered = jd_text.lower()
+    required: list[str] = []
+    preferred: list[str] = []
+    for skill in skills:
+        index = lowered.find(skill.lower())
+        window = lowered[max(0, index - 60): index + 60] if index != -1 else ""
+        if any(marker in window for marker in _PREFERRED_INLINE_MARKERS):
+            preferred.append(skill)
+        else:
+            required.append(skill)
+    return required, preferred
+
+
 def _estimate_experience_years(text: str) -> float:
     matches = _YEARS_RE.findall(text)
     if not matches:
@@ -184,6 +231,25 @@ def _estimate_experience_years(text: str) -> float:
         return max(float(m) for m in matches)
     except ValueError:
         return 0.0
+
+
+def _estimate_experience_from_dates(text: str) -> float:
+    """Fallback for resumes with no explicit "N years" statement: derive
+    total experience from the span of work-history date ranges (e.g.
+    "2019 - 2023", "Jan 2021 - Present")."""
+    current_year = date.today().year
+    starts: list[int] = []
+    ends: list[int] = []
+    for start_str, end_str in _YEAR_RANGE_RE.findall(text):
+        start = int(start_str)
+        end = current_year if end_str.lower() in ("present", "current") else int(end_str)
+        if end < start:
+            continue
+        starts.append(start)
+        ends.append(end)
+    if not starts:
+        return 0.0
+    return float(max(ends) - min(starts))
 
 
 def _extract_education(text: str) -> list[str]:

@@ -1,59 +1,129 @@
 "use client";
 
-import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { AppShell } from "@/components/app-shell";
 import { ApplicationForm } from "@/components/application-form";
-import { ResumeAts } from "@/components/resume-ats";
+import { Button, Card, CardHeader, LinkButton, Skeleton } from "@/components/ui";
 import { deleteApplication, getApplication, type Application } from "@/lib/applications";
-import { authedRequest, type User } from "@/lib/auth";
 
-const integrations = [
-  { key: "ats", title: "Resume & ATS", copy: "Tailor and assess your resume against this role.", premium: false },
-  { key: "interviews", title: "Interviews", copy: "Practice role-specific interview preparation.", premium: true },
-  { key: "skill-gap", title: "Skill Gap", copy: "Identify the skills this opportunity calls for.", premium: true },
-  { key: "learning", title: "Learning", copy: "Turn the gap into a focused learning plan.", premium: true },
-];
-
-export default function ApplicationWorkspace() {
+export default function ApplicationOverview() {
   const params = useParams<{ id: string }>();
-  const id = params?.id;
   const router = useRouter();
+  const id = params?.id;
   const [app, setApp] = useState<Application | null>(null);
-  const [user, setUser] = useState<User | null>(null);
   const [editing, setEditing] = useState(false);
-  const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!id) {
-      setError("Application ID is missing.");
-      return;
-    }
-
-    Promise.all([getApplication(id), authedRequest<User>("/auth/me")])
-      .then(([application, currentUser]) => {
-        setApp(application);
-        setUser(currentUser);
-      })
-      .catch((requestError: Error) => setError(requestError.message));
+    if (id) getApplication(id).then(setApp).catch(() => setApp(null));
   }, [id]);
 
   async function remove() {
-    if (!id || !confirm("Delete this application? This cannot be undone.")) return;
+    if (!id || !confirm("Delete this application? Its resume versions and analyses stay linked to it.")) return;
     await deleteApplication(id);
     router.replace("/applications");
   }
 
-  if (error) return <AppShell><main className="p-8"><p className="text-red-700">{error}</p><Link href="/applications" className="mt-3 inline-block text-indigo-600">Back to applications</Link></main></AppShell>;
-  if (!app || !user) return <AppShell><main className="p-8 text-slate-500">Loading workspace…</main></AppShell>;
+  if (!app) return <Skeleton className="h-72" />;
 
-  return <AppShell><main className="mx-auto max-w-6xl px-5 py-8 sm:px-8">
-    <Link href="/applications" className="text-sm font-medium text-indigo-600">← All applications</Link>
-    <div className="mt-4 flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-indigo-600">{app.status.replace("_", " ")}</p><h1 className="mt-1 text-3xl font-bold tracking-tight">{app.role}</h1><p className="mt-2 text-slate-500">{app.company}{app.location ? ` · ${app.location}` : ""}</p></div><div className="flex gap-2"><button onClick={() => setEditing(!editing)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold hover:bg-white">{editing ? "Close edit" : "Edit"}</button><button onClick={remove} className="rounded-lg px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50">Delete</button></div></div>
-    {editing && <section className="mt-7 rounded-xl border border-slate-200 bg-white p-6"><h2 className="mb-5 font-semibold">Application details</h2><ApplicationForm application={app} /></section>}
-    <section className="mt-8"><div className="flex items-end justify-between"><div><h2 className="text-xl font-bold">Role workspace</h2><p className="mt-1 text-sm text-slate-500">Connected to this application ID for each specialist tool.</p></div><span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">{user.plan}</span></div><div className="mt-5 grid gap-4 md:grid-cols-2">{integrations.map((item) => { const locked = item.premium && user.plan === "FREE"; return <article key={item.key} className={`rounded-xl border p-6 ${locked ? "border-slate-200 bg-slate-50" : "border-slate-200 bg-white"}`}><div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold">{item.title}</h3><p className="mt-2 text-sm leading-6 text-slate-500">{item.copy}</p></div>{locked ? <span className="rounded-full bg-slate-200 px-2 py-1 text-[11px] font-bold text-slate-600">PREMIUM</span> : <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-700">READY</span>}</div><div className="mt-5 border-t border-slate-100 pt-4 text-sm">{locked ? <span className="font-medium text-slate-500">Locked on the Free plan</span> : <span className="font-medium text-indigo-600">Integration point · application_id={app.id.slice(0, 8)}…</span>}</div></article>; })}</div></section>
-    <ResumeAts applicationId={app.id} initialJobDescription={app.job_description} />
-    {app.job_description && <section className="mt-8 rounded-xl border border-slate-200 bg-white p-6"><h2 className="font-semibold">Job description</h2><p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-slate-600">{app.job_description}</p></section>}
-  </main></AppShell>;
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader
+          title="Application details"
+          description="Company, role, status and the job description this workspace analyses against."
+          action={
+            <div className="flex gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setEditing((value) => !value)}>
+                {editing ? "Cancel" : "Edit"}
+              </Button>
+              <Button variant="danger" size="sm" onClick={remove}>
+                Delete
+              </Button>
+            </div>
+          }
+        />
+        <div className="p-6">
+          {editing ? (
+            <ApplicationForm
+              application={app}
+              onSaved={(updated) => {
+                setApp(updated);
+                setEditing(false);
+                router.refresh();
+              }}
+            />
+          ) : (
+            <dl className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+              <Detail label="Company" value={app.company} />
+              <Detail label="Job role" value={app.role} />
+              <Detail label="Location" value={app.location} />
+              <Detail
+                label="Application date"
+                value={app.applied_at ? new Date(app.applied_at).toLocaleDateString() : null}
+              />
+              <div className="sm:col-span-2">
+                <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Job link</dt>
+                <dd className="mt-1 text-sm">
+                  {app.job_url ? (
+                    <a
+                      href={app.job_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="break-all font-medium text-brand-600 hover:text-brand-700"
+                    >
+                      {app.job_url}
+                    </a>
+                  ) : (
+                    <span className="text-slate-400">Not set</span>
+                  )}
+                </dd>
+              </div>
+            </dl>
+          )}
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Job description"
+          description="Used by the ATS, skill gap and roadmap tools in this workspace."
+          action={
+            app.job_description ? undefined : (
+              <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+                Add one
+              </Button>
+            )
+          }
+        />
+        <div className="p-6">
+          {app.job_description ? (
+            <p className="whitespace-pre-wrap text-sm leading-6 text-slate-600">{app.job_description}</p>
+          ) : (
+            <p className="text-sm text-slate-500">
+              No job description saved yet. Adding it here means you will not have to paste it into each tool.
+            </p>
+          )}
+        </div>
+      </Card>
+
+      <Card className="bg-surface-muted/60 p-6">
+        <h2 className="text-[15px] font-semibold">Next step</h2>
+        <p className="mt-1.5 text-sm text-slate-500">
+          Upload a resume and run an ATS analysis — the skill gap, roadmap and what-if tools all build on it.
+        </p>
+        <LinkButton href={`/applications/${app.id}/ats`} size="sm" className="mt-4">
+          Go to Resume &amp; ATS
+        </LinkButton>
+      </Card>
+    </div>
+  );
+}
+
+function Detail({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div>
+      <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</dt>
+      <dd className="mt-1 text-sm text-slate-800">{value || <span className="text-slate-400">Not set</span>}</dd>
+    </div>
+  );
 }

@@ -1,3 +1,5 @@
+import { authedRequest } from "@/lib/auth";
+
 export type Priority = "High" | "Medium" | "Low";
 
 export type CareerRoadmap = {
@@ -42,26 +44,16 @@ export type WhatIfResult = {
   message: string;
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_CAREER_API_URL ?? "http://localhost:8000/api/v1/career";
+/* -------------------------------------------------------------------------- */
+/* Career intelligence lives on the main API, behind the same bearer token as  */
+/* every other client. There is no separate service and no separate base URL.  */
+/* -------------------------------------------------------------------------- */
 
-export async function getCareerRoadmap(applicationId: string, token: string, signal?: AbortSignal): Promise<CareerRoadmap> {
-  const response = await fetch(`${API_BASE_URL}/roadmap/${applicationId}`, { signal, headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || "Unable to load career roadmap");
-  }
-  return response.json() as Promise<CareerRoadmap>;
-}
+export const getCareerRoadmap = (applicationId: string, signal?: AbortSignal) =>
+  authedRequest<CareerRoadmap>(`/career/roadmap/${applicationId}`, { signal });
 
-export async function simulateWhatIf(applicationId: string, skill: string, targetLevel: number, token: string): Promise<WhatIfResult> {
-  const response = await fetch(`${API_BASE_URL}/what-if/${applicationId}`, {
+export const simulateWhatIf = (applicationId: string, skill: string, targetLevel: number) =>
+  authedRequest<WhatIfResult>(`/career/what-if/${applicationId}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ skill, target_level: targetLevel }),
   });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || "Unable to estimate the match improvement");
-  }
-  return response.json() as Promise<WhatIfResult>;
-}

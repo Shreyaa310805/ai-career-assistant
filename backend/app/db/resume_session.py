@@ -42,12 +42,36 @@ class Base(DeclarativeBase):
     pass
 
 
+# Columns added after the original ISSUE-03 schema was frozen. create_all()
+# only creates missing *tables*, so an existing dev database needs each new
+# column added explicitly. Every entry must be nullable and additive.
+_ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("ats_reports", "score_breakdown", "JSON"),
+)
+
+
 async def init_db() -> None:
-    """Create tables if they don't exist. For Postgres in real deployments
-    prefer Alembic migrations against ISSUE-03's schema; this is kept for
-    standalone/dev/test convenience."""
+    """Create tables if they don't exist, then apply additive column changes.
+
+    For Postgres in real deployments prefer Alembic migrations against
+    ISSUE-03's schema; this is kept for standalone/dev/test convenience so an
+    existing SQLite file does not have to be deleted after a schema addition.
+    """
+    from sqlalchemy import inspect, text
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        def _existing_columns(sync_conn, table: str) -> set[str]:
+            inspector = inspect(sync_conn)
+            if table not in inspector.get_table_names():
+                return set()
+            return {column["name"] for column in inspector.get_columns(table)}
+
+        for table, column, column_type in _ADDITIVE_COLUMNS:
+            present = await conn.run_sync(_existing_columns, table)
+            if present and column not in present:
+                await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"))
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

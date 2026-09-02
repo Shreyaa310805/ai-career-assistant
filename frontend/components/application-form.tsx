@@ -1,3 +1,121 @@
 "use client";
-import { FormEvent, useState } from "react"; import { useRouter } from "next/navigation"; import { createApplication, updateApplication, type Application } from "@/lib/applications";
-export function ApplicationForm({ application }: { application?: Application }) { const router = useRouter(); const [error, setError] = useState(""); const [busy, setBusy] = useState(false); async function submit(e: FormEvent<HTMLFormElement>) { e.preventDefault(); setBusy(true); setError(""); const f = new FormData(e.currentTarget); const value = (name: string) => String(f.get(name) || ""); const input = { company: value("company"), role: value("role"), status: value("status") as Application["status"], location: value("location") || null, job_url: value("job_url") || null, job_description: value("job_description") || null, applied_at: value("applied_at") || null }; try { const result = application ? await updateApplication(application.id, input) : await createApplication(input); router.replace(`/applications/${result.id}`); } catch (e) { setError(e instanceof Error ? e.message : "Unable to save application."); } finally { setBusy(false); } } return <form onSubmit={submit} className="space-y-5"><div className="grid gap-5 sm:grid-cols-2"><label className="text-sm font-medium">Company<input className="mt-1.5" name="company" required defaultValue={application?.company} /></label><label className="text-sm font-medium">Role<input className="mt-1.5" name="role" required defaultValue={application?.role} /></label><label className="text-sm font-medium">Status<select name="status" defaultValue={application?.status || "SAVED"} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5"><option value="SAVED">Saved</option><option value="APPLIED">Applied</option><option value="INTERVIEWING">Interviewing</option><option value="OFFER">Offer</option><option value="REJECTED">Rejected</option></select></label><label className="text-sm font-medium">Location<input className="mt-1.5" name="location" defaultValue={application?.location || ""} placeholder="e.g. Remote, Bengaluru" /></label><label className="text-sm font-medium">Job link<input className="mt-1.5" name="job_url" type="url" defaultValue={application?.job_url || ""} placeholder="https://…" /></label><label className="text-sm font-medium">Date applied<input className="mt-1.5" name="applied_at" type="date" defaultValue={application?.applied_at || ""} /></label></div><label className="block text-sm font-medium">Job description<textarea name="job_description" defaultValue={application?.job_description || ""} className="mt-1.5 min-h-40 w-full rounded-lg border border-slate-300 p-3 outline-none focus:border-indigo-500" placeholder="Paste the role description to make this workspace more useful later." /></label>{error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}<button disabled={busy} className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">{busy ? "Saving…" : application ? "Save changes" : "Create application"}</button></form>; }
+
+import { useRouter } from "next/navigation";
+import { FormEvent, useState } from "react";
+import { Alert, Button, Field, Select, Textarea } from "@/components/ui";
+import {
+  STATUS_LABEL,
+  STATUS_ORDER,
+  createApplication,
+  updateApplication,
+  type Application,
+} from "@/lib/applications";
+
+export function ApplicationForm({
+  application,
+  onSaved,
+}: {
+  application?: Application;
+  onSaved?: (application: Application) => void;
+}) {
+  const router = useRouter();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+
+    const form = new FormData(event.currentTarget);
+    const value = (name: string) => String(form.get(name) || "").trim();
+    const input = {
+      company: value("company"),
+      role: value("role"),
+      status: value("status") as Application["status"],
+      location: value("location") || null,
+      job_url: value("job_url") || null,
+      job_description: value("job_description") || null,
+      applied_at: value("applied_at") || null,
+    };
+
+    try {
+      const result = application
+        ? await updateApplication(application.id, input)
+        : await createApplication(input);
+      if (onSaved) onSaved(result);
+      else router.replace(`/applications/${result.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save this application.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-5">
+      <div className="grid gap-5 sm:grid-cols-2">
+        <Field label="Company">
+          <input className="field" name="company" required maxLength={160} defaultValue={application?.company} />
+        </Field>
+
+        <Field label="Job role">
+          <input className="field" name="role" required maxLength={160} defaultValue={application?.role} />
+        </Field>
+
+        <Field label="Status">
+          <Select name="status" defaultValue={application?.status ?? "SAVED"}>
+            {STATUS_ORDER.map((status) => (
+              <option key={status} value={status}>
+                {STATUS_LABEL[status]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field label="Application date">
+          <input className="field" name="applied_at" type="date" defaultValue={application?.applied_at ?? ""} />
+        </Field>
+
+        <Field label="Location">
+          <input
+            className="field"
+            name="location"
+            maxLength={160}
+            defaultValue={application?.location ?? ""}
+            placeholder="e.g. Remote, Bengaluru"
+          />
+        </Field>
+
+        <Field label="Job link">
+          <input
+            className="field"
+            name="job_url"
+            type="url"
+            defaultValue={application?.job_url ?? ""}
+            placeholder="https://…"
+          />
+        </Field>
+      </div>
+
+      <Field
+        label="Job description"
+        hint="Pasting the full posting here means the ATS and skill-gap tools can use it without re-entry."
+      >
+        <Textarea
+          name="job_description"
+          rows={8}
+          maxLength={20000}
+          defaultValue={application?.job_description ?? ""}
+          placeholder="Paste the requirements, qualifications and responsibilities."
+        />
+      </Field>
+
+      {error ? <Alert>{error}</Alert> : null}
+
+      <Button type="submit" disabled={busy}>
+        {busy ? "Saving…" : application ? "Save changes" : "Create application"}
+      </Button>
+    </form>
+  );
+}

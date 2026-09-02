@@ -88,3 +88,90 @@ def test_generate_suggestions_flags_missing_required_skills():
     categories = [s.category for s in suggestions]
     assert "Formatting & Keywords" in categories
     assert any(s.impact == "High" for s in suggestions)
+
+
+# --------------------------------------------------------------------------
+# Open-vocabulary extraction: skills outside SKILL_SYNONYMS must still count.
+# Before this, anything the taxonomy had not memorized was dropped from both
+# sides of the comparison, which made every score look pre-baked.
+# --------------------------------------------------------------------------
+JD_WITH_UNKNOWN_SKILLS = """Senior Analytics Engineer
+
+Requirements
+- 4+ years of experience building data platforms
+- Snowflake, dbt, Apache Airflow
+- Terraform and AWS
+
+Preferred Qualifications
+- Databricks
+- Looker
+"""
+
+
+def test_jd_parsing_keeps_skills_absent_from_the_taxonomy():
+    jd = heuristic_parse_jd(JD_WITH_UNKNOWN_SKILLS)
+    for skill in ("Snowflake", "dbt", "Apache Airflow"):
+        assert skill in jd.required_skills, f"{skill} was dropped from required_skills"
+    # An explicit "Preferred Qualifications" header beats proximity guessing.
+    assert "Databricks" in jd.preferred_skills
+    assert "Looker" in jd.preferred_skills
+    assert "Databricks" not in jd.required_skills
+    # Known skills still normalize through the synonym map.
+    assert "AWS" in jd.required_skills
+    assert jd.min_experience_years == 4.0
+
+
+def test_match_score_reflects_unknown_skills_on_both_sides():
+    resume = ParsedResumeData(skills=["Snowflake", "dbt", "Python"], experience_years=4)
+    jd = heuristic_parse_jd(JD_WITH_UNKNOWN_SKILLS)
+    _score, matched, missing, _components = calculate_match_score(resume, jd)
+    assert "Snowflake" in matched and "dbt" in matched
+    assert "Apache Airflow" in missing and "Terraform" in missing
+
+
+def test_resume_skills_section_captures_unlisted_technologies():
+    raw_text = "\n".join([
+        "Alex Rivera",
+        "alex@example.com",
+        "",
+        "Technical Skills",
+        "Snowflake, dbt, Apache Airflow, Python, Great Expectations",
+        "",
+        "Experience",
+        "Analytics Engineer at DataCo",
+        "2021 - Present",
+        "- Modeled 200+ dbt sources",
+    ])
+    parsed = heuristic_parse_resume(raw_text)
+    for skill in ("Snowflake", "dbt", "Apache Airflow", "Great Expectations"):
+        assert skill in parsed.skills, f"{skill} missing from parsed resume skills"
+    assert "Python" in parsed.skills  # taxonomy hits still work
+
+
+def test_prose_is_not_mistaken_for_a_skill():
+    jd = heuristic_parse_jd(
+        "Backend Engineer\n\n"
+        "Requirements\n"
+        "- You will be responsible for designing and shipping resilient services\n"
+        "- Strong knowledge of Python\n"
+    )
+    all_skills = jd.required_skills + jd.preferred_skills
+    assert "Python" in all_skills
+    assert not any(len(skill.split()) > 4 for skill in all_skills)
+    assert not any(skill.lower().startswith("you will") for skill in all_skills)
+
+
+def test_match_skills_tolerates_punctuation_and_near_spellings():
+    matched, missing = match_skills(
+        resume_skills=["React JS", "Snowflakes", "Node"],
+        jd_skills=["React.js", "Snowflake", "Node.js", "Rust"],
+    )
+    assert "React.js" in matched or "React" in matched
+    assert "Snowflake" in matched
+    assert "Rust" in missing
+
+
+def test_match_skills_does_not_confuse_short_names():
+    matched, missing = match_skills(resume_skills=["Go"], jd_skills=["R", "C#"])
+    assert matched == []
+    assert set(missing) == {"R", "C#"}

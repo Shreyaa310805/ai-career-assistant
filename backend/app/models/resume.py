@@ -72,7 +72,10 @@ class Resume(Base):
     id: Mapped[str] = mapped_column(GUID(), primary_key=True, default=_uuid_str)
     application_id: Mapped[str] = mapped_column(GUID(), nullable=False, index=True)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Private storage locator. Never returned by an API route -- responses carry
+    # an opaque `resume://<id>` reference instead. See routes/resumes.py.
     file_url: Mapped[str] = mapped_column(String, nullable=False)
+    # Full resume text, including contact details. Never returned by any route.
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
     parsed_data: Mapped[dict] = mapped_column(PortableJSON, nullable=False)
     is_best_version: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -96,6 +99,9 @@ class AtsReport(Base):
     matched_skills: Mapped[list] = mapped_column(PortableJSON, nullable=False)
     missing_skills: Mapped[list] = mapped_column(PortableJSON, nullable=False)
     improvement_suggestions: Mapped[list] = mapped_column(PortableJSON, nullable=False)
+    # Named sub-component scores from the ATS engine, persisted so the UI can
+    # explain a score on reload rather than only at analysis time.
+    score_breakdown: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     resume: Mapped["Resume"] = relationship(back_populates="ats_reports")

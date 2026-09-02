@@ -52,6 +52,10 @@ async def client(db_session_factory):
             },
         )
         ac.headers["Authorization"] = f"Bearer {registration.json()['access_token']}"
+        # The application tracker is PREMIUM-only; the resume flow tests drive it
+        # through owned applications, so upgrade the fixture account.
+        upgrade = await ac.post("/api/v1/billing/checkout", json={"plan": "PREMIUM"})
+        assert upgrade.status_code == 201
         yield ac
     app.dependency_overrides.clear()
 

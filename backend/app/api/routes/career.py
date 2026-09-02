@@ -5,11 +5,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUser, DbSession
+from app.api.deps import DbSession, PremiumUser
 from app.db.resume_session import get_db
 from app.models.application import Application
 from app.models.resume import AtsReport, Resume
 
+# Career intelligence (roadmap, skill gap, priorities, what-if, learning) is a
+# PREMIUM feature, enforced here rather than in the client.
 router = APIRouter(prefix="/career", tags=["career"])
 
 
@@ -44,29 +46,83 @@ def _priority_for_missing_skills(skills: list[str], role: str) -> list[dict[str,
     return result
 
 
+# A curated starting point per skill: documentation first, then something
+# hands-on. Kept server-side and static so the roadmap never depends on an
+# external API being reachable.
+_LEARNING_CATALOG: dict[str, list[dict[str, str]]] = {
+    "python": [
+        {"title": "Python Official Tutorial", "provider": "Python", "difficulty": "beginner", "type": "documentation", "url": "https://docs.python.org/3/tutorial/"},
+        {"title": "Python Practice Problems", "provider": "HackerRank", "difficulty": "intermediate", "type": "practice", "url": "https://www.hackerrank.com/domains/python"},
+    ],
+    "fastapi": [
+        {"title": "FastAPI Official Tutorial", "provider": "FastAPI", "difficulty": "beginner", "type": "documentation", "url": "https://fastapi.tiangolo.com/tutorial/"},
+        {"title": "Build REST APIs with FastAPI", "provider": "FastAPI", "difficulty": "intermediate", "type": "project", "url": "https://fastapi.tiangolo.com/advanced/"},
+    ],
+    "docker": [
+        {"title": "Docker Get Started", "provider": "Docker", "difficulty": "beginner", "type": "tutorial", "url": "https://docs.docker.com/get-started/"},
+        {"title": "Docker 101 Tutorial", "provider": "Docker", "difficulty": "intermediate", "type": "course", "url": "https://www.docker.com/101-tutorial/"},
+    ],
+    "aws": [
+        {"title": "AWS Cloud Practitioner Essentials", "provider": "AWS", "difficulty": "beginner", "type": "course", "url": "https://aws.amazon.com/training/digital/aws-cloud-practitioner-essentials/"},
+        {"title": "AWS Documentation", "provider": "AWS", "difficulty": "intermediate", "type": "documentation", "url": "https://docs.aws.amazon.com/"},
+    ],
+    "postgresql": [
+        {"title": "PostgreSQL Tutorial", "provider": "PostgreSQL", "difficulty": "beginner", "type": "documentation", "url": "https://www.postgresql.org/docs/current/tutorial.html"},
+        {"title": "PostgreSQL Exercises", "provider": "pgexercises", "difficulty": "intermediate", "type": "practice", "url": "https://pgexercises.com/"},
+    ],
+    "kubernetes": [
+        {"title": "Kubernetes Basics", "provider": "Kubernetes", "difficulty": "beginner", "type": "tutorial", "url": "https://kubernetes.io/docs/tutorials/kubernetes-basics/"},
+    ],
+    "javascript": [
+        {"title": "JavaScript Guide", "provider": "MDN", "difficulty": "beginner", "type": "documentation", "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide"},
+    ],
+    "typescript": [
+        {"title": "TypeScript Handbook", "provider": "TypeScript", "difficulty": "beginner", "type": "documentation", "url": "https://www.typescriptlang.org/docs/handbook/intro.html"},
+    ],
+    "react": [
+        {"title": "React Learn", "provider": "React", "difficulty": "beginner", "type": "documentation", "url": "https://react.dev/learn"},
+        {"title": "React Tutorial: Tic-Tac-Toe", "provider": "React", "difficulty": "beginner", "type": "project", "url": "https://react.dev/learn/tutorial-tic-tac-toe"},
+    ],
+    "sql": [
+        {"title": "SQL Tutorial", "provider": "PostgreSQL", "difficulty": "beginner", "type": "documentation", "url": "https://www.postgresql.org/docs/current/tutorial.html"},
+        {"title": "SQL Practice", "provider": "HackerRank", "difficulty": "intermediate", "type": "practice", "url": "https://www.hackerrank.com/domains/sql"},
+    ],
+    "git": [
+        {"title": "Pro Git Book", "provider": "Git", "difficulty": "beginner", "type": "documentation", "url": "https://git-scm.com/book/en/v2"},
+    ],
+    "terraform": [
+        {"title": "Terraform Tutorials", "provider": "HashiCorp", "difficulty": "beginner", "type": "tutorial", "url": "https://developer.hashicorp.com/terraform/tutorials"},
+    ],
+    "ci/cd": [
+        {"title": "GitHub Actions Documentation", "provider": "GitHub", "difficulty": "beginner", "type": "documentation", "url": "https://docs.github.com/en/actions"},
+    ],
+}
+
+
 def _learning_resources(skill: str) -> list[dict[str, str]]:
     """Return a useful, stable starting point without calling an external API."""
-    known_resources = {
-        "python": ("Python tutorial", "Python", "https://docs.python.org/3/tutorial/"),
-        "fastapi": ("FastAPI tutorial", "FastAPI", "https://fastapi.tiangolo.com/tutorial/"),
-        "docker": ("Docker get started", "Docker", "https://docs.docker.com/get-started/"),
-        "aws": ("AWS documentation", "AWS", "https://docs.aws.amazon.com/"),
-        "postgresql": ("PostgreSQL documentation", "PostgreSQL", "https://www.postgresql.org/docs/"),
-        "javascript": ("JavaScript guide", "MDN", "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide"),
-        "typescript": ("TypeScript handbook", "TypeScript", "https://www.typescriptlang.org/docs/handbook/intro.html"),
-        "react": ("React learn", "React", "https://react.dev/learn"),
-        "sql": ("SQL tutorial", "PostgreSQL", "https://www.postgresql.org/docs/current/tutorial.html"),
-    }
-    title, provider, url = known_resources.get(
-        skill.strip().lower(),
-        (f"Learn {skill}", "Web search", f"https://www.google.com/search?q={skill.replace(' ', '+')}+official+documentation"),
-    )
-    return [{"title": title, "provider": provider, "difficulty": "beginner", "type": "documentation", "url": url}]
+    curated = _LEARNING_CATALOG.get(skill.strip().lower())
+    if curated:
+        return curated
+    query = skill.strip().replace(" ", "+")
+    return [
+        {
+            "title": f"Learn {skill.strip()}",
+            "provider": "Web search",
+            "difficulty": "beginner",
+            "type": "documentation",
+            "url": f"https://www.google.com/search?q={query}+official+documentation",
+        }
+    ]
 
 
-async def _load_career_data(application_id: UUID, current_user: CurrentUser, application_db: DbSession, resume_db: AsyncSession):
+async def _load_career_data(application_id: UUID, current_user: PremiumUser, application_db: DbSession, resume_db: AsyncSession):
     application = application_db.scalar(
-        select(Application).where(Application.id == application_id, Application.user_id == current_user.id)
+        select(Application).where(
+            Application.id == application_id,
+            Application.user_id == current_user.id,
+            Application.is_scratch.is_(False),
+        )
     )
     if not application:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
@@ -90,7 +146,7 @@ async def _load_career_data(application_id: UUID, current_user: CurrentUser, app
 @router.get("/roadmap/{application_id}")
 async def get_career_roadmap(
     application_id: UUID,
-    current_user: CurrentUser,
+    current_user: PremiumUser,
     application_db: DbSession,
     resume_db: AsyncSession = Depends(get_db),
 ):
@@ -122,7 +178,7 @@ async def get_career_roadmap(
 async def simulate_what_if(
     application_id: UUID,
     payload: WhatIfRequest,
-    current_user: CurrentUser,
+    current_user: PremiumUser,
     application_db: DbSession,
     resume_db: AsyncSession = Depends(get_db),
 ):

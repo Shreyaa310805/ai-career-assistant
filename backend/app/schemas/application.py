@@ -52,6 +52,8 @@ class DashboardSummary(BaseModel):
     saved: int
     applied: int
     interviewing: int
-    offer: int
-    rejected: int
+    selected: int = 0
+    offer: int = 0
+    offer_declined: int = 0
+    rejected: int = 0
     recent_applications: list[ApplicationResponse]
