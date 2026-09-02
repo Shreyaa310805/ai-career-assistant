@@ -29,7 +29,7 @@ export type CareerRoadmap = {
   }>;
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_CAREER_API_URL ?? "http://127.0.0.1:8000/api/v1/career";
+const API_BASE_URL = process.env.NEXT_PUBLIC_CAREER_API_URL ?? "http://127.0.0.1:8001/api/v1/career";
 
 export async function getCareerRoadmap(signal?: AbortSignal): Promise<CareerRoadmap> {
   const response = await fetch(`${API_BASE_URL}/roadmap/app_123`, { signal });
