@@ -18,7 +18,7 @@ const TABS: Tab[] = [
   { segment: "roadmap", label: "Roadmap" },
   { segment: "what-if", label: "What-if" },
   { segment: "learning", label: "Learning" },
-  { segment: "interview", label: "Interview", soon: true },
+  { segment: "interview", label: "Interview" },
 ];
 
 /**
