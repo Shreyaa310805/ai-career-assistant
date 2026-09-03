@@ -25,7 +25,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base
 from app.models import AtsReport, Resume
 from app.services.ats_engine import calculate_ats_score, calculate_match_score, generate_suggestions
-from app.services.extraction import extract_jd_text, extract_text_from_pdf
+from app.services.extraction import extract_jd_file, extract_text_from_pdf
 from app.services.gemini_service import get_gemini_service
 from app.services.storage import new_resume_id
 from app.services.versioning import diff_versions, recommend_version
@@ -108,15 +108,17 @@ async def main() -> None:
         session.add(resume)
         await session.commit()
 
-    # --- ISSUE-12/13: JD parsing --------------------------------------------
-    _print_header("3. JD text extraction & parsing (ISSUE-12/13)")
-    jd_text = extract_jd_text(SAMPLE_JD_TEXT)
+    # --- ISSUE-12/13: JD file upload + parsing ------------------------------
+    # JDs are uploaded as a file too (.pdf / .docx / .txt) — demoed here as
+    # a plain .txt upload, the simplest of the three accepted formats.
+    _print_header("3. JD file upload, text extraction & parsing (ISSUE-12/13)")
+    jd_text = extract_jd_file(SAMPLE_JD_TEXT.encode("utf-8"), "jd.txt", "text/plain")
     parsed_jd = gemini.parse_jd(jd_text)
     print(parsed_jd.model_dump_json(indent=2))
 
     # --- ISSUE-14/15: ATS scoring + matching --------------------------------
     _print_header("4. ATS scoring & JD<->resume matching (ISSUE-14/15)")
-    ats_score, ats_components = calculate_ats_score(raw_text, parsed_resume)
+    ats_score, ats_components = calculate_ats_score(raw_text, parsed_resume, parsed_jd)
     match_score, matched, missing, match_components = calculate_match_score(parsed_resume, parsed_jd)
     print(f"ats_score:   {ats_score}  {ats_components}")
     print(f"match_score: {match_score}  {match_components}")
@@ -168,7 +170,7 @@ async def main() -> None:
         session.add(resume_v2)
         await session.commit()
 
-    ats_score_v2, ats_components_v2 = calculate_ats_score(raw_text_v2, parsed_resume_v2)
+    ats_score_v2, ats_components_v2 = calculate_ats_score(raw_text_v2, parsed_resume_v2, parsed_jd)
     match_score_v2, matched_v2, missing_v2, _ = calculate_match_score(parsed_resume_v2, parsed_jd)
     print(f"v1: ats={ats_score} match={match_score}")
     print(f"v2: ats={ats_score_v2} match={match_score_v2}")
@@ -187,6 +189,25 @@ async def main() -> None:
     )
     print(f"skills_gained: {diff.skills_gained}")
     print(f"recommended_version: {recommended} — {reason}")
+
+    # --- Regression check: same resume, two different JDs -> different
+    # ats_score. (This is exactly the bug that was reported and fixed:
+    # ats_score used to be computed from the resume alone, so it never
+    # changed when the JD changed.) -----------------------------------
+    _print_header("7. Same resume, different JDs -> different ats_score")
+    other_jd_text = (
+        "Frontend UI Engineer\n\n"
+        "Looking for a Frontend Engineer skilled in React, TypeScript, HTML, "
+        "and CSS with a strong eye for accessibility. 2+ years experience.\n"
+    )
+    parsed_other_jd = gemini.parse_jd(extract_jd_file(
+        other_jd_text.encode("utf-8"), "jd2.txt", "text/plain"
+    ))
+    ats_score_other, _ = calculate_ats_score(raw_text, parsed_resume, parsed_other_jd)
+    print(f"ats_score vs JD #1 (Senior Backend Developer): {ats_score}")
+    print(f"ats_score vs JD #2 (Frontend UI Engineer):      {ats_score_other}")
+    assert ats_score != ats_score_other, "ats_score should vary with the JD!"
+    print("OK — ats_score correctly varies by JD.")
 
     await engine.dispose()
     _print_header("Done — Module 1 pipeline ran fully standalone.")

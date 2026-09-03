@@ -2,20 +2,40 @@
 ISSUE-14 — ATS scoring engine.
 ISSUE-16 — Explainable screening report (improvement suggestions).
 
-`ats_score` measures resume *quality/parseability* independent of any JD
-(formatting, structure, quantified impact, contact completeness).
-`match_score` measures *fit against a specific JD* (skill overlap +
-experience match). Both land in ats_reports per the fixed DB schema.
+`ats_score` and `match_score` are BOTH computed against the specific JD
+passed to /analyze — this mirrors how real ATS platforms work (they score
+a resume against the posting's keywords, not in the abstract), and it's
+also what the project workflow calls for: "ATS ANALYSIS + JD <-> RESUME
+MATCHING" is one combined step that yields both scores together. Analyzing
+the same resume against two different JDs should — and now does — produce
+two different ats_scores, because each score is (mostly) driven by how
+well the resume's content lines up with *that* JD's keywords, on top of a
+smaller, JD-independent formatting/quality component:
+
+  - `ats_score`   = JD keyword coverage (45%) + resume formatting/quality
+                     signals (55%): contact info, section headers,
+                     quantified bullets, length, work-history structure.
+                     Answers: "would an ATS keyword-scan of THIS resume
+                     for THIS posting flag it as a good match?"
+  - `match_score` = required-vs-preferred skill coverage (80%) + experience
+                     match (20%). Answers: "how good a candidate fit is
+                     this, holistically, for THIS posting?"
+
+They're intentionally correlated (both depend on the JD) but not
+identical — a resume can be nicely formatted with a mediocre keyword hit
+rate (low ats_score component, but if experience is strong, decent
+match_score), or vice versa.
 
 Every score is computed from named, inspectable sub-components so the
-"explainable" requirement is met: `explain()` returns the component
-breakdown, and `generate_suggestions()` turns the same signals into
-concrete, actionable feedback.
+"explainable" requirement is met: the returned component dict doubles as
+the report's rationale, and `generate_suggestions()` turns those same
+signals into concrete, actionable feedback.
 """
 import re
 
 from app.schemas import ImprovementSuggestion, ParsedJDData, ParsedResumeData
 from app.services.matching import match_skills
+from app.services.taxonomy import dedupe_normalized
 
 _BULLET_RE = re.compile(r"^[\s]*[-*•●▪]\s+")
 _METRIC_RE = re.compile(r"\d")
@@ -23,47 +43,56 @@ _CORE_SECTION_MARKERS = ("experience", "education", "skill")
 
 
 # ------------------------------------------------------------------------ #
-# ats_score: resume quality independent of any JD
+# ats_score: JD keyword coverage + resume formatting/quality
 # ------------------------------------------------------------------------ #
-def calculate_ats_score(raw_text: str, parsed: ParsedResumeData) -> tuple[float, dict]:
+def calculate_ats_score(
+    raw_text: str, parsed: ParsedResumeData, jd: ParsedJDData
+) -> tuple[float, dict]:
     components: dict[str, float] = {}
 
-    # 1. Contact completeness (15 pts)
+    # 1. JD keyword coverage (45 pts) — THE component that makes ats_score
+    #    vary from one JD to the next, same as it would on a real ATS.
+    jd_skills = dedupe_normalized(jd.required_skills + jd.preferred_skills)
+    if jd_skills:
+        matched, _ = match_skills(parsed.skills, jd_skills)
+        coverage_ratio = len(matched) / len(jd_skills)
+    else:
+        coverage_ratio = 1.0
+    components["jd_keyword_coverage"] = round(coverage_ratio * 45, 2)
+
+    # 2. Contact completeness (10 pts)
     contact_pts = 0.0
     if parsed.email:
-        contact_pts += 8
+        contact_pts += 5.5
     if parsed.phone:
-        contact_pts += 7
-    components["contact_completeness"] = contact_pts
+        contact_pts += 4.5
+    components["contact_completeness"] = round(contact_pts, 2)
 
-    # 2. Standard section coverage (20 pts)
+    # 3. Standard section coverage (15 pts)
     lowered = raw_text.lower()
     section_hits = sum(1 for marker in _CORE_SECTION_MARKERS if marker in lowered)
-    components["section_coverage"] = round(20 * section_hits / len(_CORE_SECTION_MARKERS), 2)
+    components["section_coverage"] = round(15 * section_hits / len(_CORE_SECTION_MARKERS), 2)
 
-    # 3. Skills listed (15 pts) — scaled, capped at 8 skills for full credit
-    components["skills_listed"] = round(min(len(parsed.skills), 8) / 8 * 15, 2)
-
-    # 4. Quantified impact in bullets (20 pts)
+    # 4. Quantified impact in bullets (15 pts)
     bullets = [b for item in parsed.work_history for b in item.bullets]
     if bullets:
         quantified = sum(1 for b in bullets if _METRIC_RE.search(b))
-        components["quantified_impact"] = round(quantified / len(bullets) * 20, 2)
+        components["quantified_impact"] = round(quantified / len(bullets) * 15, 2)
     else:
         components["quantified_impact"] = 0.0
 
-    # 5. Resume length / word count sanity (15 pts) — ATS systems penalize
+    # 5. Resume length / word count sanity (10 pts) — ATS systems penalize
     #    resumes that are too sparse (under-parsed) or excessively long.
     word_count = len(raw_text.split())
     if 250 <= word_count <= 1100:
-        components["length_check"] = 15.0
+        components["length_check"] = 10.0
     elif 120 <= word_count < 250 or 1100 < word_count <= 1600:
-        components["length_check"] = 9.0
+        components["length_check"] = 6.0
     else:
-        components["length_check"] = 3.0
+        components["length_check"] = 2.0
 
-    # 6. Work history structure present (15 pts)
-    components["work_history_structure"] = 15.0 if parsed.work_history else 0.0
+    # 6. Work history structure present (5 pts)
+    components["work_history_structure"] = 5.0 if parsed.work_history else 0.0
 
     total = round(sum(components.values()), 2)
     return min(total, 100.0), components
@@ -143,7 +172,7 @@ def generate_suggestions(
                 )
             )
 
-    if ats_components.get("quantified_impact", 20) < 10:
+    if ats_components.get("quantified_impact", 15) < 7.5:
         suggestions.append(
             ImprovementSuggestion(
                 category="Experience Detail",
@@ -153,7 +182,7 @@ def generate_suggestions(
             )
         )
 
-    if ats_components.get("contact_completeness", 15) < 15:
+    if ats_components.get("contact_completeness", 10) < 10:
         suggestions.append(
             ImprovementSuggestion(
                 category="Contact Information",
@@ -163,7 +192,7 @@ def generate_suggestions(
             )
         )
 
-    if ats_components.get("section_coverage", 20) < 20:
+    if ats_components.get("section_coverage", 15) < 15:
         suggestions.append(
             ImprovementSuggestion(
                 category="Structure",

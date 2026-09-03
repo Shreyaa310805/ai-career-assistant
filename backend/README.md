@@ -58,7 +58,7 @@ app/
   response.py            {success, data, error} envelope helpers
   exceptions.py           Domain exceptions -> HTTP status + error code mapping
   services/
-    extraction.py         ISSUE-10/11/12: PyMuPDF + python-docx text extraction
+    extraction.py         ISSUE-10/11/12: PyMuPDF + python-docx + plain-text extraction (resumes: .pdf/.docx; JDs: .pdf/.docx/.txt)
     storage.py              Mock Supabase/Cloudinary-compatible file storage
     gemini_service.py       ISSUE-13: Gemini structured parsing + heuristic fallback
     taxonomy.py             Shared skills taxonomy/synonym normalization
@@ -83,10 +83,15 @@ All responses use the standard envelope:
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/v1/resumes/upload` | Upload resume (.pdf/.docx), extract text, parse, auto-version |
-| POST | `/api/v1/resumes/analyze` | Parse a JD, score ATS/match, return explainable suggestions |
+| POST | `/api/v1/resumes/analyze` | Upload a JD (.pdf/.docx/.txt), score ATS/match, return explainable suggestions |
 | GET | `/api/v1/resumes/versions/{application_id}` | List all resume versions + their latest ATS report |
 | POST | `/api/v1/resumes/compare` | Diff two resume versions and recommend one |
 | PATCH | `/api/v1/resumes/select-best` | Flag one version as the best for an application |
+
+`/upload` and `/analyze` are both `multipart/form-data` — the resume and
+the JD are each uploaded as files, not pasted as JSON text. Resumes accept
+`.pdf`/`.docx`; JDs additionally accept `.txt`, since job descriptions are
+often shared as plain text.
 
 See `app/schemas.py` for exact field-level types, and
 `frontend/types/resume.types.ts` for the TypeScript mirror.
@@ -103,10 +108,16 @@ See `app/schemas.py` for exact field-level types, and
 - **Skill matching is taxonomy-aware.** `app/services/taxonomy.py` maps
   surface forms ("aws", "amazon web services") to one canonical name so
   matching isn't fooled by wording differences between resume and JD.
-- **ATS score vs. match score are intentionally independent.** `ats_score`
-  reflects resume quality/parseability on its own; `match_score` reflects
-  fit against one specific JD. This mirrors the response contract, which
-  returns both.
+- **`ats_score` and `match_score` are both computed against the specific
+  JD in the request** — analyzing the same resume against two different
+  JDs produces two different scores for both fields, matching how real
+  ATS platforms behave (they score a resume against one posting's
+  keywords, not in the abstract). `ats_score` = JD keyword coverage (45%)
+  + resume formatting/quality signals (55%: contact info, section
+  headers, quantified bullets, length, work-history structure).
+  `match_score` = required-vs-preferred skill coverage (80%) + experience
+  match (20%). They're correlated (both JD-dependent) but not identical —
+  see the component breakdown docstring in `app/services/ats_engine.py`.
 - **First uploaded version defaults to "best"** until a comparison/manual
   selection changes it, so `GET /versions` never returns zero best-flagged
   resumes for an application with at least one version.
