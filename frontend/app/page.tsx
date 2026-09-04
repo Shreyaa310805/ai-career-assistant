@@ -31,9 +31,6 @@ const FEATURES = [
 
 const COMING_SOON = [
   { title: "Interview preparation", body: "Role-specific question sets generated from the job description and your resume gaps." },
-  { title: "Guided resume rewrite", body: "Bullet-level suggestions you can accept, edit and export as a new version." },
-  { title: "Job matching", body: "Surface roles where your current resume already scores well." },
-  { title: "Referral network", body: "Find people who can refer you into the companies you are tracking." },
 ];
 
 const FREE_PLAN = ["Resume upload (PDF or DOCX)", "Job description upload or paste", "Full ATS score with breakdown", "Skill match against the role", "Improvement suggestions"];
