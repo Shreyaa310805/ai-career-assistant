@@ -39,7 +39,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
     <main className="grid min-h-screen place-items-center bg-surface-muted px-5 py-12">
       <section className="w-full max-w-md">
         <Link href="/" className="text-sm font-semibold text-brand-600 hover:text-brand-700">
-          ← CareerPilot
+          ← SkillSync
         </Link>
 
         <div className="mt-5 rounded-card border border-line bg-white p-8 shadow-sm">
@@ -84,7 +84,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
         </div>
 
         <p className="mt-6 text-center text-sm text-slate-500">
-          {signup ? "Already have an account?" : "New to CareerPilot?"}{" "}
+          {signup ? "Already have an account?" : "New to SkillSync?"}{" "}
           <Link className="font-semibold text-brand-600 hover:text-brand-700" href={signup ? "/login" : "/signup"}>
             {signup ? "Sign in" : "Create an account"}
           </Link>

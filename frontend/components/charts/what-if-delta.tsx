@@ -15,7 +15,7 @@ export function WhatIfDelta({
   gain: number;
 }) {
   const rows = [
-    { label: "Today", value: current, color: "var(--viz-track)", text: "text-slate-700" },
+    { label: "Today", value: current, color: "var(--viz-series-3)", text: "text-slate-700" },
     { label: "Projected", value: projected, color: "var(--viz-series-1)", text: "text-slate-900" },
   ];
 

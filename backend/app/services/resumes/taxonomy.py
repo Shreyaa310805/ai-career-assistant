@@ -55,9 +55,31 @@ SKILL_SYNONYMS: dict[str, set[str]] = {
     "Kafka": {"kafka", "apache kafka"},
     "Spark": {"spark", "apache spark"},
     "R": {" r ", "r programming"},
-    "Excel": {"excel", "ms excel"},
+    "Excel": {"excel", "ms excel", "microsoft excel"},
     "Power BI": {"power bi", "powerbi"},
     "Tableau": {"tableau"},
+    # Non-technical / productivity & soft skills — ATS matching should not
+    # be limited to technical keywords.
+    "Microsoft Word": {"ms word", "microsoft word", "word processing", "word"},
+    "PowerPoint": {"powerpoint", "ms powerpoint", "microsoft powerpoint", "power point"},
+    "Google Sheets": {"google sheets"},
+    "Google Docs": {"google docs"},
+    "Google Slides": {"google slides"},
+    "Microsoft Office": {"microsoft office", "ms office", "office suite"},
+    "Communication": {"communication", "communication skills", "verbal communication", "written communication"},
+    "Leadership": {"leadership", "leadership skills", "team leadership"},
+    "Teamwork": {"teamwork", "team player", "collaboration"},
+    "Time Management": {"time management"},
+    "Problem Solving": {"problem solving", "problem-solving"},
+    "Critical Thinking": {"critical thinking"},
+    "Project Management": {"project management"},
+    "Presentation Skills": {"presentation skills", "public speaking"},
+    "Customer Service": {"customer service"},
+    "Negotiation": {"negotiation"},
+    "Adaptability": {"adaptability", "flexibility"},
+    # Canonical name is "Organizational Skills", not the bare word
+    # "organization" — too common in unrelated contexts (company names, etc).
+    "Organizational Skills": {"organizational skills", "organisational skills"},
 }
 
 _SURFACE_TO_CANONICAL: dict[str, str] = {}

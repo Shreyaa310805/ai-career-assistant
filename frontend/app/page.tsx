@@ -61,7 +61,7 @@ export default function Home() {
       <header className="sticky top-0 z-40 border-b border-line bg-white/85 backdrop-blur">
         <nav className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <Link href="/" className="text-lg font-bold tracking-tight">
-            Career<span className="text-brand-600">Pilot</span>
+            Skill<span className="text-brand-600">Sync</span>
           </Link>
           <div className="hidden gap-7 text-sm font-medium text-slate-600 md:flex">
             <a href="#features" className="hover:text-slate-900">Features</a>
@@ -83,7 +83,7 @@ export default function Home() {
           Find out why your resume is being filtered out.
         </h1>
         <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-slate-600">
-          Upload your resume and the job description. CareerPilot scores what an applicant tracking system
+          Upload your resume and the job description. SkillSync scores what an applicant tracking system
           would see, shows which requirements you are missing, and turns the gap into a plan.
         </p>
         <div className="mt-9 flex flex-wrap justify-center gap-3">
@@ -209,7 +209,7 @@ export default function Home() {
 
       <footer className="border-t border-line py-8">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 text-sm text-slate-500">
-          <span className="font-semibold text-slate-900">Career<span className="text-brand-600">Pilot</span></span>
+          <span className="font-semibold text-slate-900">Skill<span className="text-brand-600">Sync</span></span>
           <span>Resume and ATS analysis for your job search.</span>
         </div>
       </footer>

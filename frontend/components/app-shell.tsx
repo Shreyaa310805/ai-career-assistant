@@ -60,7 +60,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const sidebar = (
     <div className="flex h-full flex-col px-5 py-6">
       <Link href="/dashboard" className="text-lg font-bold tracking-tight text-slate-900">
-        Career<span className="text-brand-600">Pilot</span>
+        Skill<span className="text-brand-600">Sync</span>
       </Link>
       <p className="mt-1 text-xs text-slate-500">
         {isPremium ? "Application command center" : "Resume & ATS workspace"}
@@ -141,7 +141,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </span>
           </Button>
           <Link href="/dashboard" className="text-base font-bold lg:hidden">
-            Career<span className="text-brand-600">Pilot</span>
+            Skill<span className="text-brand-600">Sync</span>
           </Link>
 
           <div className="ml-auto flex items-center gap-3">

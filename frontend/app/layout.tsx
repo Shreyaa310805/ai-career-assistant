@@ -5,7 +5,7 @@ import { Inter } from "next/font/google";
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans", display: "swap" });
 
 export const metadata: Metadata = {
-  title: "CareerPilot — Resume & ATS analysis",
+  title: "SkillSync — Resume & ATS analysis",
   description:
     "Score your resume the way an applicant tracking system reads it, see which job requirements you are missing, and turn the gap into a plan.",
 };

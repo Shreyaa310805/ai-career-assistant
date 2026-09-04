@@ -121,7 +121,9 @@ async def run_analysis(
     jd_parsed = get_gemini_service().parse_jd(jd_content)
     resume_parsed = ParsedResumeData.model_validate(resume.parsed_data)
 
-    ats_score, ats_components = calculate_ats_score(resume.raw_text, resume_parsed)
+    ats_score, ats_components = calculate_ats_score(
+        resume.raw_text, resume_parsed, jd_parsed, jd_content
+    )
     match_score, matched_skills, missing_skills, match_components = calculate_match_score(
         resume_parsed, jd_parsed
     )

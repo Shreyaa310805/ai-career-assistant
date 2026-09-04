@@ -2,10 +2,21 @@
 ISSUE-14 — ATS scoring engine.
 ISSUE-16 — Explainable screening report (improvement suggestions).
 
-`ats_score` measures resume *quality/parseability* independent of any JD
-(formatting, structure, quantified impact, contact completeness).
-`match_score` measures *fit against a specific JD* (skill overlap +
+`ats_score` measures resume *quality/parseability against industry-standard
+formatting* (structure, quantified impact, contact completeness) blended with
+how well the resume's content overlaps the given JD — so it genuinely moves
+when either the resume or the JD changes. `match_score` measures *fit against
+a specific JD* in more detail (required vs. preferred skill overlap +
 experience match). Both land in ats_reports per the fixed DB schema.
+
+The JD-alignment component (`skills_listed`) deliberately does not rely
+solely on structured skill extraction: many real job postings are written as
+prose with no bulleted "Requirements" section, which leaves
+`ParsedJDData.required_skills`/`preferred_skills` empty and would silently
+make the score JD-independent again. `_keyword_overlap_ratio()` is a plain
+significant-word overlap between the resume and the raw JD text, so there is
+always a signal that responds to the JD's actual wording, blended with the
+structured skill match when one is available.
 
 Every score is computed from named, inspectable sub-components so the
 "explainable" requirement is met: `explain()` returns the component
@@ -15,17 +26,59 @@ concrete, actionable feedback.
 import re
 
 from app.schemas.resume import ImprovementSuggestion, ParsedJDData, ParsedResumeData
-from app.services.resumes.matching import match_skills
+from app.services.resumes.matching import match_skills, skill_overlap_ratio
 
 _BULLET_RE = re.compile(r"^[\s]*[-*•●▪]\s+")
 _METRIC_RE = re.compile(r"\d")
 _CORE_SECTION_MARKERS = ("experience", "education", "skill")
 
+_WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+#.]{1,}")
+# Generic filler words, not skill/role signal — excluded so overlap reflects
+# actual content words rather than shared grammar.
+_STOPWORDS = frozenset({
+    "the", "and", "a", "an", "to", "of", "in", "for", "on", "with", "is", "are",
+    "as", "at", "by", "or", "this", "that", "will", "be", "have", "has", "had",
+    "you", "your", "we", "our", "us", "they", "their", "it", "its", "from",
+    "into", "about", "other", "such", "can", "may", "new", "all", "any", "one",
+    "two", "per", "up", "out", "if", "so", "but", "than", "then", "there",
+    "here", "more", "most", "some", "each", "who", "what", "when", "where",
+    "which", "not", "also", "etc", "including", "include", "includes",
+    "looking", "role", "job", "team", "years", "year", "experience",
+    "required", "preferred", "must", "should", "would", "strong",
+    "excellent", "using", "work", "working", "across", "ability", "able",
+})
+
+
+def _significant_words(text: str) -> set[str]:
+    return {
+        match.group(0).lower()
+        for match in _WORD_RE.finditer(text)
+        if len(match.group(0)) > 2 and match.group(0).lower() not in _STOPWORDS
+    }
+
+
+def _keyword_overlap_ratio(resume_text: str, jd_text: str) -> float:
+    """Fraction of the JD's significant words also present in the resume.
+
+    Independent of the skills taxonomy, so it always reflects the JD's
+    actual wording even when structured skill extraction comes back empty.
+    """
+    jd_words = _significant_words(jd_text)
+    if not jd_words:
+        return 1.0
+    resume_words = _significant_words(resume_text)
+    return len(jd_words & resume_words) / len(jd_words)
+
 
 # ------------------------------------------------------------------------ #
 # ats_score: resume quality independent of any JD
 # ------------------------------------------------------------------------ #
-def calculate_ats_score(raw_text: str, parsed: ParsedResumeData) -> tuple[float, dict]:
+def calculate_ats_score(
+    raw_text: str,
+    parsed: ParsedResumeData,
+    jd: ParsedJDData | None = None,
+    jd_text: str = "",
+) -> tuple[float, dict]:
     components: dict[str, float] = {}
 
     # 1. Contact completeness (15 pts)
@@ -41,8 +94,21 @@ def calculate_ats_score(raw_text: str, parsed: ParsedResumeData) -> tuple[float,
     section_hits = sum(1 for marker in _CORE_SECTION_MARKERS if marker in lowered)
     components["section_coverage"] = round(20 * section_hits / len(_CORE_SECTION_MARKERS), 2)
 
-    # 3. Skills listed (15 pts) — scaled, capped at 8 skills for full credit
-    components["skills_listed"] = round(min(len(parsed.skills), 8) / 8 * 15, 2)
+    # 3. JD alignment (15 pts) — blends structured skill overlap (matched
+    #    required/preferred skills) with a plain keyword overlap against the
+    #    raw JD text. The keyword signal is what keeps this responsive even
+    #    when a prose-style JD yields no extractable skill list. Falls back
+    #    to a plain resume skill count when no JD is available at all.
+    jd_skills = [*jd.required_skills, *jd.preferred_skills] if jd else []
+    ratios = []
+    if jd_skills:
+        ratios.append(skill_overlap_ratio(parsed.skills, jd_skills))
+    if jd_text.strip():
+        ratios.append(_keyword_overlap_ratio(raw_text, jd_text))
+    if ratios:
+        components["skills_listed"] = round(sum(ratios) / len(ratios) * 15, 2)
+    else:
+        components["skills_listed"] = round(min(len(parsed.skills), 8) / 8 * 15, 2)
 
     # 4. Quantified impact in bullets (20 pts)
     bullets = [b for item in parsed.work_history for b in item.bullets]
