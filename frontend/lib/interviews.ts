@@ -19,6 +19,24 @@ export type InterviewResponse = {
   error: { code: string; message: string; details?: unknown } | null;
 };
 
+export type InterviewQuestion = {
+  question_id: string;
+  interview_id: string;
+  question_number: number;
+  question: string;
+  topic: string;
+  question_type: string;
+  difficulty: InterviewDifficulty;
+  expected_skills: string[];
+  reason: string;
+};
+
+export type InterviewQuestionResponse = {
+  success: boolean;
+  data: InterviewQuestion | null;
+  error: { code: string; message: string; details?: unknown } | null;
+};
+
 export function createInterview(applicationId: string, personality: InterviewPersonality, difficulty: InterviewDifficulty) {
   return authedRequest<InterviewResponse>("/interviews", {
     method: "POST",
@@ -27,3 +45,10 @@ export function createInterview(applicationId: string, personality: InterviewPer
 }
 
 export const getInterview = (interviewId: string) => authedRequest<InterviewResponse>(`/interviews/${interviewId}`);
+
+export function generateInterviewQuestion(interviewId: string, mode: "standard" | "adaptive" = "standard") {
+  return authedRequest<InterviewQuestionResponse>(`/interviews/${interviewId}/questions`, {
+    method: "POST",
+    body: JSON.stringify({ mode }),
+  });
+}

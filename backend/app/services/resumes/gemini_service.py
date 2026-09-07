@@ -21,6 +21,7 @@ import re
 from datetime import date
 
 from app.core.config import get_settings
+from app.schemas.interview import DifficultyEnum, GeneratedQuestion
 from app.schemas.resume import ParsedJDData, ParsedResumeData, WorkHistoryItem
 from app.services.resumes.taxonomy import (
     extract_all_skills,
@@ -133,6 +134,91 @@ class GeminiService:
         data = json.loads(response.text)
         return ParsedJDData.model_validate(data)
 
+    # ------------------------------------------------------------------ #
+    # Interview question generation
+    # ------------------------------------------------------------------ #
+    def generate_interview_question(
+        self,
+        *,
+        role: str,
+        job_description: str,
+        personality: str,
+        difficulty: DifficultyEnum,
+        resume_skills: list[str],
+        matched_skills: list[str],
+        missing_skills: list[str],
+        question_number: int,
+        previous_questions: list[str],
+        resume_evidence: str,
+    ) -> GeneratedQuestion:
+        """Generate one validated question, with a deterministic offline fallback.
+
+        Only public career data is supplied to the model: no name, contact
+        details, raw resume text, or file locator leaves the service boundary.
+        """
+        if self._client is not None:
+            try:
+                generated = self._generate_interview_question_via_gemini(
+                    role=role, job_description=job_description, personality=personality,
+                    difficulty=difficulty, resume_skills=resume_skills,
+                    matched_skills=matched_skills, missing_skills=missing_skills,
+                    question_number=question_number, previous_questions=previous_questions,
+                    resume_evidence=resume_evidence,
+                )
+                if generated.question.strip() in {question.strip() for question in previous_questions}:
+                    raise ValueError("Gemini returned a duplicate interview question")
+                return generated
+            except Exception as exc:
+                logger.warning("Gemini interview generation failed, using fallback: %s", exc)
+        return heuristic_interview_question(
+            role=role, personality=personality, difficulty=difficulty,
+            resume_skills=resume_skills, matched_skills=matched_skills,
+            missing_skills=missing_skills, question_number=question_number,
+            previous_questions=previous_questions,
+            resume_evidence=resume_evidence,
+        )
+
+    def _generate_interview_question_via_gemini(self, **context) -> GeneratedQuestion:
+        from google.genai import types
+
+        prompt = self._interview_question_prompt(**context)
+        response = self._client.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json", response_schema=GeneratedQuestion,
+            ),
+        )
+        return GeneratedQuestion.model_validate(json.loads(response.text))
+
+    @staticmethod
+    def _interview_question_prompt(**context) -> str:
+        return (
+            "You are interviewing a real candidate for the target role. Create exactly one specific, "
+            "natural interview question. Prioritize concrete candidate projects and experience from the "
+            "resume evidence, then job requirements/responsibilities, then matched and missing skills. "
+            "Probe understanding, implementation, debugging, design, trade-offs, edge cases, or decision "
+            "making as appropriate. Do not simply place one skill into a generic template. Vary the question "
+            "dimension from previous questions. Skills are context, not mandatory words to insert. "
+            "Personality determines the question intent: technical = implementation/design/debugging; friendly = "
+            "approachable project or technical discussion; strict = challenging technical reasoning; behavioral = "
+            "past experience, ownership, collaboration, decisions, failures, or outcomes (never a hypothetical "
+            "implementation/design question); mixed may combine technical and behavioral intent. "
+            "Choose a genuinely different interview angle from previous questions whenever possible. Do not "
+            "treat the job title as a skill. Do not mention internal generation concepts, considerations, scoring, "
+            "strategy names, or reasoning. Never append an instruction to give a different approach or example. "
+            "Do not request or include personal/contact information.\n\n"
+            f"ROLE: {context['role']}\nJOB DESCRIPTION: {context['job_description'][:12000]}\n"
+            f"PERSONALITY: {context['personality']}\nDIFFICULTY: {context['difficulty'].value}\n"
+            f"QUESTION NUMBER: {context['question_number']}\nRESUME SKILLS: {context['resume_skills']}\n"
+            f"RESUME EVIDENCE (projects, experience, education):\n{context['resume_evidence'][:12000]}\n"
+            f"MATCHED SKILLS: {context['matched_skills']}\nMISSING SKILLS: {context['missing_skills']}\n"
+            f"PREVIOUS QUESTIONS: {context['previous_questions']}\n\n"
+            "Generate exactly one natural question and the existing structured metadata. Do not repeat or merely "
+            "rephrase previous questions. Maintain the selected personality and difficulty while staying relevant "
+            "to the role, JD, resume, and ATS context."
+        )
+
 
 # ---------------------------------------------------------------------- #
 # Heuristic fallback parsers (no external calls; deterministic; tested)
@@ -159,6 +245,219 @@ def heuristic_parse_resume(raw_text: str) -> ParsedResumeData:
         work_history=work_history,
         education=education,
     )
+
+
+def heuristic_interview_question(
+    *, role: str, personality: str, difficulty: DifficultyEnum, resume_skills: list[str],
+    matched_skills: list[str], missing_skills: list[str], question_number: int,
+    previous_questions: list[str], resume_evidence: str,
+) -> GeneratedQuestion:
+    """Stable, context-driven fallback used when Gemini is unavailable."""
+    skills = missing_skills or matched_skills or resume_skills
+    topic = skills[(question_number - 1) % len(skills)] if skills else ""
+    question_topic = _natural_topic(topic)
+    project = _resume_project_evidence(resume_evidence, previous_questions, question_number)
+    if personality == "behavioral" and project:
+        project_title = project.split(" — ", 1)[0].split(" - ", 1)[0].strip()
+        strategies = {
+            "challenge": f"Tell me about a difficult challenge you faced while building {project_title}. How did you approach it and what was the outcome?",
+            "decision": f"Describe an important decision you made in {project_title}. What alternatives did you consider, and why did you choose that approach?",
+            "failure": f"Tell me about a setback or mistake you encountered in {project_title}. How did you communicate it and what did you learn?",
+            "collaboration": f"How did you work with others or gather feedback while building {project_title}? What did that change?",
+            "ownership": f"What part of {project_title} did you take ownership of, and how did you ensure it was completed well?",
+            "learning": f"What did building {project_title} teach you that changed how you approach later work?",
+        }
+        question, _ = _question_for_new_angle(strategies, previous_questions, question_number)
+        question_type = "behavioral"
+    elif project:
+        project_title = project.split(" — ", 1)[0].split(" - ", 1)[0].strip()
+        if personality == "friendly":
+            strategies = {
+                "walkthrough": f"I would love to hear about {project_title}. Could you walk me through what it does and your role in building it?",
+                "learning": f"What did you enjoy learning while building {project_title}, and how did you apply it?",
+                "challenge": f"Could you walk me through an interesting challenge in {project_title} and how you worked through it?",
+                "improvement": f"If you had more time with {project_title}, what practical improvement would you make first?",
+                "reasoning": f"What guided your approach to {project_title} when you had to choose between possible solutions?",
+            }
+        elif personality == "strict":
+            strategies = {
+                "trade_off": f"Defend the key design decisions in {project_title}. What trade-offs and failure modes did you account for?",
+                "production_risk": f"Where would {project_title} break under production load? Give a concrete diagnosis and remediation plan.",
+                "edge_case": f"What edge case in {project_title} is most likely to produce incorrect behavior, and how would you address it?",
+                "debugging": f"A critical workflow in {project_title} is failing intermittently. How would you isolate the root cause?",
+                "scalability": f"What would be the first bottleneck if {project_title} had ten times the traffic, and why?",
+            }
+        elif personality == "mixed":
+            strategies = {
+                "architecture": f"In your {project_title}, how did you structure the implementation{f' around {question_topic}' if question_topic else ''}?",
+                "challenge": f"Tell me about a difficult challenge you faced while building {project_title}. How did you respond?",
+                "debugging": f"Walk me through a difficult bug or edge case in {project_title}. How did you diagnose and fix it?",
+                "decision": f"Describe a design decision you made in {project_title}. What alternatives did you consider?",
+                "scalability": f"If {project_title} had to support substantially more users, what would you change first and why?",
+            }
+        else:
+            implementation_focus = f" around {question_topic}" if question_topic else ""
+            strategies = {
+                "architecture": f"In your {project_title}, how did you structure the implementation{implementation_focus}? What trade-off did you make?",
+                "debugging": f"Walk me through a difficult bug or edge case in {project_title}. How did you diagnose and fix it?",
+                "scalability": f"If {project_title} had to support substantially more users, what would you change first and why?",
+                "design_decision": f"What design decision in {project_title} would you revisit today, and what impact would that have?",
+                "testing": f"How did you test {project_title}, and which failure scenario were you most concerned about?",
+                "security": f"What security or data-protection risk did you consider in {project_title}, and how did you mitigate it?",
+            }
+        question, _ = _question_for_new_angle(strategies, previous_questions, question_number)
+        question_type = "project_deep_dive"
+    elif personality == "behavioral":
+        strategies = {
+            "challenge": f"Tell me about a challenge you faced in a project or work experience relevant to the {role or 'target'} role. How did you approach it and what was the outcome?",
+            "decision": "Tell me about an important decision you made with incomplete information. What alternatives did you consider?",
+            "failure": "Tell me about a mistake or setback in a project. How did you respond and what did you learn?",
+            "collaboration": "Describe a time you had to align with someone who had a different technical perspective. How did you handle it?",
+            "learning": "Tell me about a time feedback changed how you approached a project or task.",
+        }
+        question, _ = _question_for_new_angle(strategies, previous_questions, question_number)
+        question_type = "behavioral"
+    elif personality == "friendly":
+        strategies = {
+            "walkthrough": f"Let us talk through how you would approach a {role or 'target'} project. What would you try first, and why?",
+            "learning": "What is a technical concept you recently learned through a project, and what helped it click for you?",
+            "challenge": "What is a project challenge you found satisfying to solve, and how did you work through it?",
+            "improvement": "Think of a project you completed. What practical improvement would you make if you revisited it?",
+            "reasoning": "When you have several possible ways to solve a problem, how do you decide where to start?",
+        }
+        question, _ = _question_for_new_angle(strategies, previous_questions, question_number)
+        question_type = "scenario"
+    elif personality == "strict":
+        strategies = {
+            "failure_mode": f"Design a production-ready approach for a {role or 'target'} role. Which failure mode would you test first, and why?",
+            "edge_case": f"What edge case would most likely break a {role or 'target'} feature, and how would you detect it?",
+            "debugging": f"A {role or 'target'} feature fails only under load. What evidence would you gather before changing code?",
+            "trade_off": f"Defend a technical trade-off you would make when building a {role or 'target'} system.",
+            "reliability": f"What reliability risk would you address before releasing a {role or 'target'} feature?",
+        }
+        question, _ = _question_for_new_angle(strategies, previous_questions, question_number)
+        question_type = "design"
+    else:
+        if question_topic:
+            strategies = {
+                "implementation": f"How would you implement {question_topic} for a realistic {role or 'target'} problem? Explain the key components.",
+                "debugging": f"A {role or 'target'} feature related to {question_topic} is failing intermittently. How would you investigate it?",
+                "trade_off": f"What trade-offs would you evaluate when choosing an approach involving {question_topic} for a {role or 'target'} system?",
+                "edge_case": f"What edge cases would you test first when building a {role or 'target'} feature involving {question_topic}?",
+                "testing": f"How would you test a {role or 'target'} feature built with {question_topic} before release?",
+            }
+        else:
+            strategies = {
+                "implementation": f"How would you break down a realistic {role or 'target'} problem into implementable components?",
+                "debugging": f"A {role or 'target'} feature is failing intermittently. How would you investigate it?",
+                "trade_off": f"What trade-offs would you evaluate before choosing an approach for a {role or 'target'} system?",
+                "edge_case": f"What edge cases would you test first when building a {role or 'target'} feature?",
+                "testing": f"How would you validate a {role or 'target'} feature before release?",
+            }
+        question, _ = _question_for_new_angle(strategies, previous_questions, question_number)
+        question_type = "technical" if personality == "technical" else "mixed"
+    return GeneratedQuestion(
+        question=question, topic=topic, question_type=question_type, difficulty=difficulty,
+        expected_skills=[topic] if topic else [],
+        reason=f"Targets {project_title if project else (topic or role)} using the candidate's resume and role context.",
+    )
+
+
+def _resume_project_evidence(
+    resume_evidence: str, previous_questions: list[str], question_number: int,
+) -> str:
+    """Choose a less-covered project without changing question-angle selection."""
+    in_projects = False
+    candidates: list[str] = []
+    for raw_line in resume_evidence.splitlines():
+        line = raw_line.strip(" \t-•*")
+        if not line:
+            continue
+        if line.lower() in {"projects", "personal projects", "academic projects", "project experience"}:
+            in_projects = True
+            continue
+        if in_projects and line.lower() in {
+            "experience", "work experience", "professional experience", "education", "skills",
+            "certifications", "achievements",
+        }:
+            break
+        if in_projects and len(line) > 8 and (
+            not candidates or any(separator in line for separator in (" — ", " - ", "|", ":"))
+        ):
+            candidates.append(line[:400])
+    if not candidates:
+        return ""
+
+    history = " ".join(previous_questions).lower()
+    # Relevance comes from the resume/JD context already supplied to Gemini;
+    # this fallback only avoids letting the first parsed project monopolize a
+    # sequence. Question number breaks ties among equally uncovered evidence.
+    coverage = [history.count(candidate.split(" — ", 1)[0].split(" - ", 1)[0].strip().lower()) for candidate in candidates]
+    least_covered = min(coverage)
+    options = [candidate for candidate, count in zip(candidates, coverage) if count == least_covered]
+    return options[(question_number - 1) % len(options)]
+
+
+_ANGLE_HINTS: dict[str, tuple[str, ...]] = {
+    "architecture": ("structure the implementation", "key components"),
+    "implementation": ("implement", "break down"),
+    "debugging": ("bug", "failing", "root cause", "investigate"),
+    "scalability": ("more users", "traffic", "bottleneck", "under load"),
+    "trade_off": ("trade-off", "tradeoff"),
+    "edge_case": ("edge case", "incorrect behavior"),
+    "testing": ("test ", "validate"),
+    "security": ("security", "data-protection"),
+    "design_decision": ("design decision",),
+    "challenge": ("challenge",),
+    "decision": ("important decision", "alternatives did you consider"),
+    "failure": ("setback", "mistake"),
+    "collaboration": ("work with others", "different technical perspective"),
+    "ownership": ("ownership",),
+    "learning": ("what did", "feedback changed", "recently learned"),
+    "walkthrough": ("walk me through", "what it does"),
+    "improvement": ("improvement", "revisited"),
+    "reasoning": ("guided your approach", "decide where to start"),
+    "production_risk": ("production load", "production-ready"),
+    "failure_mode": ("failure mode",),
+    "reliability": ("reliability",),
+}
+
+
+def _question_for_new_angle(
+    strategies: dict[str, str], previous_questions: list[str], question_number: int,
+) -> tuple[str, str]:
+    """Choose an unused interview intent before producing its natural wording."""
+    used_angles = _used_question_angles(previous_questions)
+    options = list(strategies.items())
+    start = (question_number - 1) % len(options)
+    rotated = options[start:] + options[:start]
+    for angle, question in rotated:
+        if angle not in used_angles and question.strip() not in {item.strip() for item in previous_questions}:
+            return question, angle
+    for angle, question in rotated:
+        if question.strip() not in {item.strip() for item in previous_questions}:
+            return question, angle
+    # All local fallback angles were exhausted. This preserves a natural
+    # question rather than fabricating a uniqueness suffix.
+    return rotated[0][1], rotated[0][0]
+
+
+def _used_question_angles(previous_questions: list[str]) -> set[str]:
+    used: set[str] = set()
+    for question in previous_questions:
+        lowered = question.lower()
+        for angle, hints in _ANGLE_HINTS.items():
+            if any(hint in lowered for hint in hints):
+                used.add(angle)
+    return used
+
+
+def _natural_topic(topic: str) -> str:
+    """Avoid leaking parser labels such as 'Understanding of X' into speech."""
+    normalized = re.sub(r"^understanding of\s+", "", topic, flags=re.IGNORECASE).strip()
+    if normalized.lower() in {"communication skills", "leadership", "teamwork", "problem solving"}:
+        return ""
+    return normalized
 
 
 # Headers under which a listed skill is a nice-to-have rather than a must-have.

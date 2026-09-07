@@ -161,6 +161,30 @@ Errors: `404` application not found or not owned, `409` no resume uploaded / no 
 | GET | `/access/ats-score` | User |
 | GET | `/access/premium` | Premium |
 
+## Interviews â€” `/interviews` *(Premium)*
+
+| Method | Path | Access | Request | Response `data` |
+| --- | --- | --- | --- | --- |
+| POST | `/interviews` | Premium | `{application_id, personality, difficulty}` | interview session |
+| GET | `/interviews/{interview_id}` | Premium | â€” | interview session |
+| POST | `/interviews/{interview_id}/questions` | Premium | `{mode: "standard" | "adaptive"}` | one persisted question |
+| GET | `/interviews/{interview_id}/questions` | Premium | â€” | ordered persisted questions |
+
+Question creation uses the application's role and JD plus the latest selected resume and ATS report when available. It returns the standard envelope:
+
+```json
+{
+  "success": true,
+  "data": {
+    "question_id": "uuid", "interview_id": "uuid", "question_number": 1,
+    "question": "How would you apply FastAPI to solve a realistic backend problem?",
+    "topic": "FastAPI", "question_type": "technical", "difficulty": "medium",
+    "expected_skills": ["FastAPI"], "reason": "This question targets FastAPI from the application context."
+  },
+  "error": null
+}
+```
+
 ## Health
 
 `GET /health` (unprefixed) → `{"status": "ok"}`.
