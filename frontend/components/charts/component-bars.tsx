@@ -11,7 +11,7 @@ export type ScoreComponent = { key: string; label: string; earned: number; avail
 export const ATS_COMPONENT_MAX: Record<string, { label: string; max: number; hint: string }> = {
   contact_completeness: { label: "Contact details", max: 15, hint: "An email address and a phone number near the top." },
   section_coverage: { label: "Section coverage", max: 20, hint: "Clearly labelled Experience, Education and Skills headings." },
-  skills_listed: { label: "Skills listed", max: 15, hint: "A recognisable skills list — eight or more scores full marks." },
+  skills_listed: { label: "Skills listed", max: 15, hint: "How much of the job description's skill list your resume evidences." },
   quantified_impact: { label: "Quantified impact", max: 20, hint: "Bullets that carry numbers, percentages or scale." },
   length_check: { label: "Length", max: 15, hint: "Roughly 250–1100 words parses cleanly; far outside that is penalised." },
   work_history_structure: { label: "Work history", max: 15, hint: "Structured roles with company, dates and bullets." },

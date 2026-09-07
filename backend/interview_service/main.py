@@ -10,7 +10,7 @@ from routers import interviews
 # Fine for this MVP; a real migration tool (Alembic) can replace this later — see PART 6.
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Person 2 - AI Interview Module")
+app = FastAPI(title="AI Interview Module")
 
 app.add_middleware(
     CORSMiddleware,
