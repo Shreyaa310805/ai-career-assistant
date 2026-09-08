@@ -2,10 +2,13 @@
 
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { Alert, Badge, Button, Card, CardHeader, Field, LinkButton, Select } from "@/components/ui";
+import { Alert, Badge, Button, Card, CardHeader, Field, LinkButton, Select, Textarea } from "@/components/ui";
 import {
   createInterview,
+  evaluateInterviewAnswer,
   generateInterviewQuestion,
+  submitInterviewAnswer,
+  type InterviewAnswerEvaluation,
   type InterviewDifficulty,
   type InterviewPersonality,
   type InterviewQuestion,
@@ -36,6 +39,10 @@ export default function InterviewPage() {
   const [isStarting, setIsStarting] = useState(false);
   const [question, setQuestion] = useState<InterviewQuestion | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [answerText, setAnswerText] = useState("");
+  const [submittedAnswerId, setSubmittedAnswerId] = useState<string | null>(null);
+  const [evaluation, setEvaluation] = useState<InterviewAnswerEvaluation | null>(null);
+  const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
 
   async function startInterview() {
     if (!applicationId) {
@@ -70,10 +77,41 @@ export default function InterviewPage() {
       }
       setQuestion(response.data);
       setSession({ ...session, question_count: response.data.question_number });
+      setAnswerText("");
+      setSubmittedAnswerId(null);
+      setEvaluation(null);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to generate a question. Please try again.");
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  async function submitAndEvaluateAnswer() {
+    if (!session || !question || !answerText.trim()) return;
+    setError("");
+    setIsSubmittingAnswer(true);
+    try {
+      let answerId = submittedAnswerId;
+      if (!answerId) {
+        const submitted = await submitInterviewAnswer(session.interview_id, question.question_id, answerText);
+        if (!submitted.success || !submitted.data) {
+          setError(submitted.error?.message ?? "Unable to submit your answer. Please try again.");
+          return;
+        }
+        answerId = submitted.data.answer_id;
+        setSubmittedAnswerId(answerId);
+      }
+      const evaluated = await evaluateInterviewAnswer(session.interview_id, answerId);
+      if (!evaluated.success || !evaluated.data) {
+        setError(evaluated.error?.message ?? "Your answer was saved, but could not be evaluated yet.");
+        return;
+      }
+      setEvaluation(evaluated.data);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to submit your answer. Please try again.");
+    } finally {
+      setIsSubmittingAnswer(false);
     }
   }
 
@@ -102,6 +140,22 @@ export default function InterviewPage() {
               </div>
               <p className="mt-4 text-base leading-7 text-slate-800">{question.question}</p>
               {question.expected_skills.length ? <p className="mt-3 text-sm text-slate-500">Expected skills: {question.expected_skills.join(", ")}</p> : null}
+              <div className="mt-5 space-y-3 border-t border-line pt-5">
+                <Field label="Your answer" hint="Your typed answer will be evaluated against this question.">
+                  <Textarea value={answerText} onChange={(event) => { setAnswerText(event.target.value); setSubmittedAnswerId(null); setEvaluation(null); }} rows={6} placeholder="Write your answer here..." disabled={isSubmittingAnswer} />
+                </Field>
+                <Button onClick={submitAndEvaluateAnswer} disabled={isSubmittingAnswer || !answerText.trim()}>
+                  {isSubmittingAnswer ? "Submitting and evaluating..." : submittedAnswerId ? "Re-evaluate answer" : "Submit answer"}
+                </Button>
+              </div>
+              {evaluation ? (
+                <section className="mt-5 rounded-lg border border-brand-100 bg-brand-50/40 p-4">
+                  <p className="text-sm font-semibold text-slate-900">Evaluation: {evaluation.overall_score}/100</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-700">{evaluation.feedback}</p>
+                  {evaluation.strengths.length ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Strengths:</span> {evaluation.strengths.join(" ")}</p> : null}
+                  {evaluation.weaknesses.length ? <p className="mt-2 text-sm text-slate-700"><span className="font-semibold">Improve:</span> {evaluation.weaknesses.join(" ")}</p> : null}
+                </section>
+              ) : null}
             </section>
           ) : <Alert tone="info">Generate your first question to begin practice for this application.</Alert>}
           <div className="flex flex-wrap gap-3">

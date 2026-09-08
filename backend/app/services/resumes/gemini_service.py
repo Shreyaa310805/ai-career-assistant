@@ -21,7 +21,7 @@ import re
 from datetime import date
 
 from app.core.config import get_settings
-from app.schemas.interview import DifficultyEnum, GeneratedQuestion
+from app.schemas.interview import DifficultyEnum, GeneratedAnswerEvaluation, GeneratedQuestion
 from app.schemas.resume import ParsedJDData, ParsedResumeData, WorkHistoryItem
 from app.services.resumes.taxonomy import (
     extract_all_skills,
@@ -191,6 +191,69 @@ class GeminiService:
         )
         return GeneratedQuestion.model_validate(json.loads(response.text))
 
+    # ------------------------------------------------------------------ #
+    # Interview answer evaluation
+    # ------------------------------------------------------------------ #
+    def evaluate_interview_answer(self, **context) -> GeneratedAnswerEvaluation:
+        """Return validated feedback, with a deterministic local fallback.
+
+        Personality changes feedback wording only. The same rubric and score
+        scale apply to every interview style.
+        """
+        if self._client is not None:
+            try:
+                generated = self._evaluate_interview_answer_via_gemini(**context)
+                return _enforce_relevance_gate(generated, **context)
+            except Exception as exc:
+                logger.warning("Gemini answer evaluation failed, using fallback: %s", exc)
+        return heuristic_answer_evaluation(**context)
+
+    def _evaluate_interview_answer_via_gemini(self, **context) -> GeneratedAnswerEvaluation:
+        from google.genai import types
+
+        response = self._client.models.generate_content(
+            model=settings.gemini_model,
+            contents=self._answer_evaluation_prompt(**context),
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json", response_schema=GeneratedAnswerEvaluation,
+            ),
+        )
+        return GeneratedAnswerEvaluation.model_validate(json.loads(response.text))
+
+    @staticmethod
+    def _answer_evaluation_prompt(**context) -> str:
+        question_type = context["question_type"]
+        behavioral_guidance = (
+            "For behavioral questions, correctness means appropriateness, credible reasoning, ownership, "
+            "actions, outcome, and learning; do not pretend there is one technical answer."
+            if question_type == "behavioral"
+            else "For technical questions, judge logical/technical correctness only from what the answer says; do not invent facts."
+        )
+        return (
+            "Evaluate only the provided interview answer. Return valid JSON that exactly matches the requested "
+            "schema. Do not invent project details, technologies, outcomes, experience, or facts not stated in "
+            "the answer or supplied context. Score every dimension and overall_score from 0 to 100. Use one fair "
+            "competence rubric regardless of interviewer personality; personality changes feedback tone only. "
+            "First infer the question intent and the answer components it requires. Relevance is a gate: an "
+            "answer that is mostly irrelevant must have very low relevance and an overall score no higher than "
+            "35; a completely irrelevant/refusal answer must be no higher than 20. Fluency, length, grammar, "
+            "or mentioning a topic keyword must not compensate for failing to answer the question. Evaluate "
+            "relevance, correctness, depth, clarity, and evidence/specificity. "
+            f"{behavioral_guidance}\n\n"
+            f"QUESTION: {context['question']}\nQUESTION TYPE: {question_type}\nTOPIC: {context['topic']}\n"
+            f"DIFFICULTY: {context['difficulty']}\nEXPECTED SKILLS: {context['expected_skills']}\n"
+            f"INTERVIEW PERSONALITY: {context['personality']}\nJOB DESCRIPTION: {context['job_description'][:8000]}\n"
+            f"RESUME/ATS CONTEXT: {context['resume_evidence'][:8000]}\nANSWER: {context['answer_text'][:12000]}\n\n"
+            "For debugging questions, look for a problem, diagnosis, root cause, fix, and validation. For trade-off "
+            "questions, look for alternatives, decision, reasoning, pros/cons, and outcome. For architecture questions, "
+            "look for components, interactions, reasoning, and constraints. Keep strengths, weaknesses, and missing_points "
+            "concrete and supported by the answer. Feedback must name present or missing components; never use generic "
+            "warnings about unsupported claims unless there is a specific contradiction in the answer. For collaboration or "
+            "feedback behavioral questions, count action, outcome, and reflection only when tied to the collaboration event. "
+            "For decision questions, alternatives, decision, and reasoning are primary; a practical benefit is useful but "
+            "optional unless the question explicitly asks for an outcome."
+        )
+
     @staticmethod
     def _interview_question_prompt(**context) -> str:
         return (
@@ -254,9 +317,14 @@ def heuristic_interview_question(
 ) -> GeneratedQuestion:
     """Stable, context-driven fallback used when Gemini is unavailable."""
     skills = missing_skills or matched_skills or resume_skills
-    topic = skills[(question_number - 1) % len(skills)] if skills else ""
-    question_topic = _natural_topic(topic)
+    selected_skill = str(skills[(question_number - 1) % len(skills)]).strip() if skills else ""
+    question_topic = _natural_topic(selected_skill)
     project = _resume_project_evidence(resume_evidence, previous_questions, question_number)
+    # The question can be grounded in a project even when extraction found no
+    # skills. Keep expected_skills truthful, but always give the persisted
+    # question a schema-valid, useful topic label.
+    project_topic = project.split(" — ", 1)[0].split(" - ", 1)[0].strip() if project else ""
+    topic = selected_skill or project_topic or "General Software Engineering"
     if personality == "behavioral" and project:
         project_title = project.split(" — ", 1)[0].split(" - ", 1)[0].strip()
         strategies = {
@@ -358,9 +426,297 @@ def heuristic_interview_question(
         question_type = "technical" if personality == "technical" else "mixed"
     return GeneratedQuestion(
         question=question, topic=topic, question_type=question_type, difficulty=difficulty,
-        expected_skills=[topic] if topic else [],
-        reason=f"Targets {project_title if project else (topic or role)} using the candidate's resume and role context.",
+        expected_skills=[selected_skill] if selected_skill else [],
+        reason=f"Targets {project_title if project else topic} using the candidate's resume and role context.",
     )
+
+
+def heuristic_answer_evaluation(
+    *, question: str, question_type: str, topic: str, difficulty: str, expected_skills: list[str],
+    personality: str, job_description: str, resume_evidence: str, answer_text: str,
+) -> GeneratedAnswerEvaluation:
+    """Conservative evaluator for unavailable/invalid AI responses.
+
+    It measures observable answer quality only. It never claims to verify an
+    unstated implementation, technology, or project outcome.
+    """
+    answer = answer_text.strip()
+    lowered = answer.lower()
+    words = re.findall(r"[a-zA-Z0-9+#.-]+", lowered)
+    word_count = len(words)
+    unknown = bool(re.fullmatch(r"(?:i\s+)?(?:don't|do not) know[.! ]*", lowered))
+    if unknown or word_count < 3:
+        return GeneratedAnswerEvaluation(
+            overall_score=5, relevance_score=5, correctness_score=5, depth_score=0, clarity_score=20,
+            evidence_score=0, strengths=[], weaknesses=["The response does not answer the question."],
+            missing_points=["A direct answer", "Reasoning or an example"],
+            feedback=_feedback_tone(personality, "Start with a direct answer, then explain your reasoning with one concrete example."),
+        )
+
+    assessment = _intent_assessment(question, question_type, lowered)
+    present = assessment["present"]
+    missing = assessment["missing"]
+    component_count = len(present)
+    category = assessment["category"]
+    if category == "relevant_shallow" and not missing:
+        missing = [_shallow_detail_needed(assessment["intent"])]
+    detail_markers = sum(marker in lowered for marker in (
+        "because", "for example", "for instance", "trace", "reproduce", "test", "result", "outcome", "learned",
+    ))
+    structure_markers = sum(marker in lowered for marker in ("first", "then", "finally", "because", "however"))
+    specificity = min(20, word_count // 3 + detail_markers * 3)
+    clarity = min(90, 35 + min(30, word_count // 4) + structure_markers * 7)
+    if category == "strong":
+        relevance = min(95, 76 + component_count * 4 + min(8, specificity // 3))
+        correctness = min(88, 52 + component_count * 6 + specificity // 3)
+        depth = min(92, 40 + component_count * 7 + specificity // 2)
+        evidence = min(90, 35 + component_count * 7 + specificity // 2)
+    elif category == "relevant_shallow":
+        relevance = min(72, 45 + component_count * 5 + min(7, specificity // 4))
+        correctness = min(62, 25 + component_count * 5 + specificity // 4)
+        depth = min(58, 15 + component_count * 5 + specificity // 4)
+        evidence = min(58, 15 + component_count * 5 + specificity // 4)
+    elif category == "partial":
+        relevance, correctness, depth, evidence = 38, 28, 20, 18
+    elif category == "mostly_irrelevant":
+        relevance, correctness, depth, evidence = 12, 12, 8, 5
+    else:
+        relevance, correctness, depth, evidence = 3, 3, 0, 0
+        clarity = min(clarity, 30)
+    weighted = round(relevance * .32 + correctness * .26 + depth * .18 + clarity * .12 + evidence * .12)
+    overall = min(weighted, _relevance_cap(category))
+    strengths = _present_component_strengths(present)
+    weaknesses = []
+    if category in {"mostly_irrelevant", "irrelevant"}:
+        weaknesses.append(f"This does not answer the {assessment['intent']} question.")
+    elif missing:
+        weaknesses.append(f"It does not explain {', '.join(missing[:3])}.")
+    if category == "strong" and missing:
+        weaknesses.append(f"To make it stronger, add {missing[0]}.")
+    feedback = _evaluation_feedback(personality, assessment, category)
+    return GeneratedAnswerEvaluation(
+        overall_score=overall, relevance_score=relevance, correctness_score=correctness, depth_score=depth,
+        clarity_score=clarity, evidence_score=evidence, strengths=strengths[:3], weaknesses=weaknesses[:3],
+        missing_points=missing[:4], feedback=feedback,
+    )
+
+
+def _intent_assessment(question: str, question_type: str, answer: str) -> dict[str, object]:
+    """Match answer components to question intent, not generic topic words."""
+    lowered_question = question.lower()
+    manual_present: list[str] | None = None
+    if question_type == "behavioral":
+        if any(term in lowered_question for term in ("work with others", "gather feedback", "teammate", "collaborat", "feedback")):
+            intent = "collaboration and feedback"
+            components = [
+                ("the collaboration or feedback interaction", ()),
+                ("your action within that interaction", ()),
+                ("the resulting change or outcome", ()),
+                ("what the experience changed in your future approach", ()),
+            ]
+            interaction = any(marker in answer for marker in (
+                "teammate", "team", "feedback", "reviewed", "review", "discussed", "together", "suggestion", "collaborat",
+            ))
+            action = interaction and any(marker in answer for marker in (
+                "reviewed", "updated", "changed", "incorporat", "acted on", "adjusted", "made changes", "rewrote", "implemented",
+            ))
+            outcome = interaction and any(marker in answer for marker in (
+                "improved", "better", "changed the design", "updated queries", "resolved", "final work", "consisten", "reliab",
+            ))
+            reflection = interaction and any(marker in answer for marker in (
+                "i learned", "next time", "since then", "changed how i", "i now", "i try to", "would do differently",
+            ))
+            manual_present = [label for label, found in zip(
+                [item[0] for item in components], [interaction, action, outcome, reflection]
+            ) if found]
+        else:
+            intent = "behavioral"
+            components = [
+                ("the situation or challenge", ("project", "team", "release", "deadline", "customer", "when ", "situation")),
+                ("your action or ownership", ("took ownership", "i decided", "i led", "i communicated", "i handled", "i responded")),
+                ("the outcome", ("result", "outcome", "improved", "delivered", "resolved", "impact")),
+                ("what you learned or would do differently", ("i learned", "would do differently", "next time", "since then", "changed how i", "i now")),
+            ]
+    elif any(term in lowered_question for term in ("bug", "debug", "diagnose", "root cause", "edge case", "failing", "fix it")):
+        intent = "debugging"
+        components = [
+            ("the bug or incorrect behavior", ("bug", "error", "wrong", "fail", "issue", "edge case", "exception", "invalid", "missing", "crash")),
+            ("how you diagnosed it", ("reproduc", "trace", "debug", "inspect", "check", "log", "isolat", "investigat")),
+            ("the root cause", ("root cause", "assumption", "condition", "caused", "identified", "found that")),
+            ("the fix", ("fix", "changed", "validat", "handl", "guard", "corrected", "updated", "resolved")),
+            ("how you validated the fix", ("test", "retest", "verif", "boundar", "regression", "confirm", "empty", "invalid")),
+        ]
+    elif (
+        any(term in lowered_question for term in ("structure", "implementation", "architecture", "design"))
+        and any(term in lowered_question for term in ("trade-off", "tradeoff", "alternatives", "choose between"))
+    ):
+        # This is deliberately before the generic trade-off branch: a question
+        # can ask both how a design works and why it was selected.
+        intent = "implementation and trade-off"
+        components = [
+            ("the database role or implementation structure", (
+                "stores ", "store ", "tables", "schema", "data model", "database access", "relational schema",
+            )),
+            ("how it integrates with the backend", (
+                "python connect", "python connected", "python handles", "backend", "request handling", "access layer", "sql queries",
+            )),
+            ("the design choice", (
+                "used postgresql", "chose", "chosen", "preferred", "selected", "relational schema",
+            )),
+            ("the trade-off or reasoning", (
+                "trade-off", "tradeoff", "more setup", "upfront", "despite", "however", "but ", "cost",
+            )),
+            ("a practical consequence or benefit", (
+                "consisten", "easier relationship", "relationship management", "maintain", "reliab", "reduced complexity", "stored data properly", "benefit",
+            )),
+        ]
+    elif any(term in lowered_question for term in ("guided your approach", "choose between", "possible solutions", "which option")):
+        intent = "decision and trade-off"
+        components = [
+            ("the alternatives considered", ()),
+            ("the decision", ()),
+            ("the reasoning or trade-off", ()),
+            ("a practical benefit or consequence", ()),
+        ]
+        alternatives = any(marker in answer for marker in (
+            "alternative", "other ways", "rather than", "versus", " vs ", "while a", "more configurable", "instead of", "between",
+        ))
+        decision = any(marker in answer for marker in (
+            "i chose", "i selected", "i used", "better fit", "i prioritized", "i preferred", "we chose", "we selected",
+        ))
+        reasoning = any(marker in answer for marker in (
+            "trade-off", "tradeoff", "convenience versus control", "because", "greater control", "less control", "prioritized", "easier",
+        )) and (decision or alternatives)
+        benefit = any(marker in answer for marker in (
+            "simpler deployment", "easier maintenance", "faster deployment", "faster workflow", "reduced complexity", "greater control", "less control", "reliab",
+        )) and (decision or reasoning)
+        manual_present = [label for label, found in zip(
+            [item[0] for item in components], [alternatives, decision, reasoning, benefit]
+        ) if found]
+    elif any(term in lowered_question for term in ("trade-off", "tradeoff", "alternatives", "choose between")):
+        intent = "trade-off"
+        components = [
+            ("the alternatives", ("alternative", "option", "instead", "versus", "vs")),
+            ("your decision", ("chose", "decided", "selected", "choice")),
+            ("the reasoning or trade-off", ("because", "trade-off", "tradeoff", "advantage", "disadvantage", "cost")),
+            ("the outcome", ("result", "outcome", "impact", "improved")),
+        ]
+    elif any(term in lowered_question for term in ("architecture", "design", "components", "structure")):
+        intent = "architecture"
+        components = [
+            ("the main components", ("component", "service", "database", "api", "client", "queue")),
+            ("how the parts interact", ("flow", "between", "request", "communicat", "connect", "through")),
+            ("the design reasoning", ("because", "chose", "reason", "trade-off", "constraint")),
+            ("constraints or trade-offs", ("scale", "security", "performance", "cost", "failure", "trade-off")),
+        ]
+    else:
+        intent = "technical"
+        components = [
+            ("a direct approach", ("would", "approach", "implement", "design", "use")),
+            ("the reasoning", ("because", "reason", "trade-off", "consider")),
+            ("validation or an example", ("test", "example", "verify", "result")),
+        ]
+    present = manual_present if manual_present is not None else [
+        label for label, markers in components if any(marker in answer for marker in markers)
+    ]
+    missing = [label for label, _ in components if label not in present]
+    # Topic overlap is a weak signal only. Exclude prompt scaffolding such as
+    # "with" or "what", which should never make an unrelated answer look
+    # even partially relevant.
+    prompt_words = {
+        "about", "between", "build", "building", "change", "choose", "describe", "did", "does", "from",
+        "gather", "guided", "have", "how", "into", "others", "possible", "question", "solutions", "that",
+        "their", "them", "these", "through", "walk", "what", "when", "while", "with", "would", "your",
+    }
+    topic_mentioned = any(
+        term in answer for term in re.findall(r"[a-zA-Z]{4,}", lowered_question) if term not in prompt_words
+    )
+    # Full component coverage in a very short response can still be a list of
+    # assertions. Treat it as shallow unless it contains a substantive
+    # explanation of how the components connect.
+    strong_detail = True
+    if intent == "decision and trade-off":
+        strong_detail = any(marker in answer for marker in (
+            "convenience versus control", "more configurable", "greater control", "less control", "deployment workflow",
+            "version control", "repository", "scope of the project",
+        ))
+    if len(present) >= max(3, len(components) - 1) and len(answer.split()) >= 35 and strong_detail:
+        category = "strong"
+    elif len(present) >= 2:
+        category = "relevant_shallow"
+    elif len(present) == 1:
+        category = "partial"
+    elif topic_mentioned:
+        category = "mostly_irrelevant"
+    else:
+        category = "irrelevant"
+    return {"intent": intent, "present": present, "missing": missing, "category": category}
+
+
+def _relevance_cap(category: str) -> int:
+    return {"strong": 100, "relevant_shallow": 72, "partial": 60, "mostly_irrelevant": 35, "irrelevant": 20}[category]
+
+
+def _present_component_strengths(present: list[str]) -> list[str]:
+    return [f"You explained {component}." for component in present]
+
+
+def _shallow_detail_needed(intent: str) -> str:
+    if intent == "implementation and trade-off":
+        return "a specific schema, data-flow, or practical consequence"
+    if intent == "debugging":
+        return "the specific failing case or validation detail"
+    if intent == "behavioral":
+        return "a concrete outcome or reflection"
+    return "a concrete implementation detail or example"
+
+
+def _evaluation_feedback(personality: str, assessment: dict[str, object], category: str) -> str:
+    intent = assessment["intent"]
+    present = assessment["present"]
+    missing = assessment["missing"]
+    if category in {"mostly_irrelevant", "irrelevant"}:
+        required = ", ".join(missing[:4])
+        return _feedback_tone(personality, f"This does not answer the {intent} question. Address {required} instead of only discussing the topic generally.")
+    if category == "strong":
+        improvement = f" To strengthen it further, explain {missing[0]}." if missing else ""
+        return _feedback_tone(personality, f"You clearly covered {', '.join(present)}.{improvement}")
+    missing_text = ", ".join(missing[:3]) if missing else _shallow_detail_needed(intent)
+    return _feedback_tone(personality, f"You covered {', '.join(present)} but did not explain {missing_text}.")
+
+
+def _enforce_relevance_gate(generated: GeneratedAnswerEvaluation, **context) -> GeneratedAnswerEvaluation:
+    """Keep a fluent but off-intent Gemini response from bypassing relevance."""
+    assessment = _intent_assessment(context["question"], context["question_type"], context["answer_text"].lower())
+    category = assessment["category"]
+    cap = _relevance_cap(category)
+    if category == "strong":
+        return generated
+    fallback = heuristic_answer_evaluation(**context)
+    if category in {"relevant_shallow", "partial"}:
+        return generated.model_copy(update={
+            "overall_score": min(generated.overall_score, cap),
+            "relevance_score": min(generated.relevance_score, fallback.relevance_score),
+        })
+    return generated.model_copy(update={
+        "overall_score": min(generated.overall_score, cap),
+        "relevance_score": min(generated.relevance_score, fallback.relevance_score),
+        "correctness_score": min(generated.correctness_score, fallback.correctness_score),
+        "depth_score": min(generated.depth_score, fallback.depth_score),
+        "evidence_score": min(generated.evidence_score, fallback.evidence_score),
+        "strengths": fallback.strengths,
+        "weaknesses": fallback.weaknesses,
+        "missing_points": fallback.missing_points,
+        "feedback": fallback.feedback,
+    })
+
+
+def _feedback_tone(personality: str, message: str) -> str:
+    if personality == "friendly":
+        return f"You have a useful starting point. {message}"
+    if personality == "strict":
+        return message
+    return message
 
 
 def _resume_project_evidence(

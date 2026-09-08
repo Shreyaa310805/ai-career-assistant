@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://localhost:3000"
     resume_database_url: str = "sqlite+aiosqlite:///./resume_ats.db"
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-3.6-flash"
     storage_backend: str = "local"
     storage_local_dir: str = "./storage"
     supabase_url: str = ""

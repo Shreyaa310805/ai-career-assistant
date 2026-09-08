@@ -8,11 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import DbSession, PremiumUser
 from app.models.application import Application
 from app.db.resume_session import get_db as get_resume_db
-from app.models.interview import Interview, InterviewQuestion
+from app.models.interview import Interview, InterviewAnswer, InterviewAnswerEvaluation, InterviewQuestion
 from app.schemas.interview import (
-    APIResponse, GenerateQuestionRequest, GeneratedQuestion, InterviewCreateRequest,
-    InterviewData, InterviewQuestionData, InterviewQuestionsData,
+    APIResponse, AnswerSubmitRequest, GenerateQuestionRequest, GeneratedAnswerEvaluation, GeneratedQuestion,
+    InterviewAnswerData, InterviewAnswerEvaluationData, InterviewCreateRequest, InterviewData,
+    InterviewQuestionData, InterviewQuestionsData,
 )
+from app.services.interview_evaluation import evaluate_answer_for_application
 from app.services.interview_questions import generate_question_for_application
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
@@ -37,6 +39,26 @@ def _question_data(question: InterviewQuestion) -> InterviewQuestionData:
         topic=question.topic, question_type=question.question_type,
         difficulty=question.difficulty, expected_skills=question.expected_skills,
         reason=question.reason,
+    )
+
+
+def _answer_data(answer: InterviewAnswer) -> InterviewAnswerData:
+    return InterviewAnswerData(
+        answer_id=answer.id, interview_id=answer.interview_id, question_id=answer.question_id,
+        answer_text=answer.answer_text, source=answer.source, duration_seconds=answer.duration_seconds,
+        submitted_at=answer.created_at,
+    )
+
+
+def _evaluation_data(evaluation: InterviewAnswerEvaluation) -> InterviewAnswerEvaluationData:
+    return InterviewAnswerEvaluationData(
+        evaluation_id=evaluation.id, answer_id=evaluation.answer_id, overall_score=evaluation.overall_score,
+        relevance_score=evaluation.relevance_score, correctness_score=evaluation.correctness_score,
+        depth_score=evaluation.depth_score, clarity_score=evaluation.clarity_score, evidence_score=evaluation.evidence_score,
+        strengths=evaluation.strengths, weaknesses=evaluation.weaknesses, missing_points=evaluation.missing_points,
+        feedback=evaluation.feedback, evaluated_at=evaluation.evaluated_at,
+        technical_correctness=evaluation.correctness_score, relevance=evaluation.relevance_score,
+        reasoning=evaluation.depth_score, communication=evaluation.clarity_score,
     )
 
 
@@ -95,6 +117,15 @@ def _owned_interview(interview_id: UUID, user_id: UUID, db: DbSession) -> Interv
     return interview
 
 
+def _answer_for_interview(answer_id: UUID, interview_id: UUID, db: DbSession) -> InterviewAnswer:
+    answer = db.scalar(select(InterviewAnswer).where(
+        InterviewAnswer.id == answer_id, InterviewAnswer.interview_id == interview_id
+    ))
+    if not answer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Answer not found")
+    return answer
+
+
 @router.post("/{interview_id}/questions", response_model=APIResponse)
 async def generate_question(
     interview_id: UUID, payload: GenerateQuestionRequest, db: DbSession, current_user: PremiumUser,
@@ -145,3 +176,60 @@ def list_questions(interview_id: UUID, db: DbSession, current_user: PremiumUser)
     return APIResponse(success=True, data=InterviewQuestionsData(
         interview_id=interview.id, questions=[_question_data(question) for question in questions]
     ), error=None)
+
+
+@router.post("/{interview_id}/answers", response_model=APIResponse)
+def submit_answer(
+    interview_id: UUID, payload: AnswerSubmitRequest, db: DbSession, current_user: PremiumUser,
+):
+    _owned_interview(interview_id, current_user.id, db)
+    question = db.scalar(select(InterviewQuestion).where(
+        InterviewQuestion.id == payload.question_id, InterviewQuestion.interview_id == interview_id
+    ))
+    if not question:
+        # Do not disclose whether a question exists in another session.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
+    answer = InterviewAnswer(
+        interview_id=interview_id, question_id=question.id, answer_text=payload.answer_text,
+        source=payload.source.value, duration_seconds=payload.duration_seconds,
+    )
+    db.add(answer)
+    db.commit()
+    db.refresh(answer)
+    return APIResponse(success=True, data=_answer_data(answer), error=None)
+
+
+@router.post("/{interview_id}/answers/{answer_id}/evaluate", response_model=APIResponse)
+async def evaluate_answer(
+    interview_id: UUID, answer_id: UUID, db: DbSession, current_user: PremiumUser,
+    resume_db: AsyncSession = Depends(get_resume_db),
+):
+    interview = _owned_interview(interview_id, current_user.id, db)
+    application = _owned_application(interview.application_id, current_user.id, db)
+    answer = _answer_for_interview(answer_id, interview.id, db)
+    question = db.scalar(select(InterviewQuestion).where(
+        InterviewQuestion.id == answer.question_id, InterviewQuestion.interview_id == interview.id
+    ))
+    if not question:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Answer question is no longer available")
+
+    generated: GeneratedAnswerEvaluation = await evaluate_answer_for_application(
+        application=application, interview=interview, question=question, answer=answer, resume_db=resume_db,
+    )
+    evaluation = db.scalar(select(InterviewAnswerEvaluation).where(InterviewAnswerEvaluation.answer_id == answer.id))
+    if evaluation is None:
+        evaluation = InterviewAnswerEvaluation(answer_id=answer.id)
+        db.add(evaluation)
+    evaluation.overall_score = generated.overall_score
+    evaluation.relevance_score = generated.relevance_score
+    evaluation.correctness_score = generated.correctness_score
+    evaluation.depth_score = generated.depth_score
+    evaluation.clarity_score = generated.clarity_score
+    evaluation.evidence_score = generated.evidence_score
+    evaluation.strengths = generated.strengths
+    evaluation.weaknesses = generated.weaknesses
+    evaluation.missing_points = generated.missing_points
+    evaluation.feedback = generated.feedback
+    db.commit()
+    db.refresh(evaluation)
+    return APIResponse(success=True, data=_evaluation_data(evaluation), error=None)

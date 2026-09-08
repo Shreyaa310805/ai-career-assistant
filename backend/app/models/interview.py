@@ -44,3 +44,53 @@ class InterviewQuestion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     interview: Mapped[Interview] = relationship(back_populates="questions")
+    answers: Mapped[list["InterviewAnswer"]] = relationship(
+        back_populates="question", cascade="all, delete-orphan"
+    )
+
+
+class InterviewAnswer(Base):
+    __tablename__ = "interview_answers"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    interview_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("interviews.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    question_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("interview_questions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    answer_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="typed")
+    duration_seconds: Mapped[float | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    interview: Mapped[Interview] = relationship()
+    question: Mapped[InterviewQuestion] = relationship(back_populates="answers")
+    evaluation: Mapped["InterviewAnswerEvaluation | None"] = relationship(
+        back_populates="answer", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class InterviewAnswerEvaluation(Base):
+    __tablename__ = "interview_answer_evaluations"
+    __table_args__ = (UniqueConstraint("answer_id", name="uq_interview_answer_evaluation_answer"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    answer_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("interview_answers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    overall_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    relevance_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    correctness_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    depth_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    clarity_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    strengths: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    weaknesses: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    missing_points: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    feedback: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    answer: Mapped[InterviewAnswer] = relationship(back_populates="evaluation")
