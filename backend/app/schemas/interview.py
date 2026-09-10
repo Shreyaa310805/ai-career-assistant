@@ -20,20 +20,26 @@ class DifficultyEnum(str, Enum):
     hard = "hard"
 
 
-class InterviewModeEnum(str, Enum):
-    standard = "standard"
-    adaptive = "adaptive"
-
-
 class AnswerSourceEnum(str, Enum):
     typed = "typed"
     voice = "voice"
+
+
+class RecommendationEnum(str, Enum):
+    strong_hire = "strong_hire"
+    hire = "hire"
+    borderline = "borderline"
+    no_hire = "no_hire"
+
+
+MAX_INTERVIEW_QUESTIONS = 6
 
 
 class InterviewCreateRequest(BaseModel):
     application_id: UUID
     personality: PersonalityEnum
     difficulty: DifficultyEnum
+    question_target: int = Field(default=5, ge=1, le=MAX_INTERVIEW_QUESTIONS)
 
 
 class InterviewData(BaseModel):
@@ -43,11 +49,8 @@ class InterviewData(BaseModel):
     difficulty: str
     status: str
     question_count: int = 0
+    question_target: int
     started_at: datetime | None = None
-
-
-class GenerateQuestionRequest(BaseModel):
-    mode: InterviewModeEnum = InterviewModeEnum.standard
 
 
 class GeneratedQuestion(BaseModel):
@@ -91,6 +94,8 @@ class GeneratedAnswerEvaluation(BaseModel):
     depth_score: int = Field(ge=0, le=100)
     clarity_score: int = Field(ge=0, le=100)
     evidence_score: int = Field(ge=0, le=100)
+    confidence_score: int = Field(ge=0, le=100)
+    confidence_rationale: str = Field(min_length=3, max_length=400)
     strengths: list[str] = Field(default_factory=list, max_length=8)
     weaknesses: list[str] = Field(default_factory=list, max_length=8)
     missing_points: list[str] = Field(default_factory=list, max_length=8)
@@ -118,6 +123,76 @@ class InterviewAnswerEvaluationData(GeneratedAnswerEvaluation):
     communication: int
 
 
+class InterviewSummaryData(BaseModel):
+    """One row in the paginated history list — computed at read time, nothing denormalized."""
+
+    interview_id: UUID
+    application_id: UUID
+    personality: str
+    difficulty: str
+    status: str
+    question_count: int
+    question_target: int
+    answered_count: int
+    average_score: float | None = None
+    average_confidence: float | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    recommendation: str | None = None
+
+
+class InterviewHistoryData(BaseModel):
+    items: list[InterviewSummaryData]
+    total: int
+    page: int
+    page_size: int
+
+
+class InterviewQuestionWithAnswerData(BaseModel):
+    question: InterviewQuestionData
+    answer: InterviewAnswerData | None = None
+    evaluation: InterviewAnswerEvaluationData | None = None
+
+
+class InterviewFullSessionData(BaseModel):
+    interview_id: UUID
+    application_id: UUID
+    personality: str
+    difficulty: str
+    status: str
+    question_target: int
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    summary: str | None = None
+    recommendation: str | None = None
+    average_score: float | None = None
+    average_confidence: float | None = None
+    items: list[InterviewQuestionWithAnswerData]
+
+
+class GeneratedInterviewSummary(BaseModel):
+    """Gemini structured-output contract for session completion."""
+
+    summary: str = Field(min_length=20, max_length=2000)
+    recommendation: RecommendationEnum
+    key_strengths: list[str] = Field(default_factory=list, max_length=6)
+    key_gaps: list[str] = Field(default_factory=list, max_length=6)
+
+
+class CompleteInterviewData(BaseModel):
+    interview_id: UUID
+    status: str
+    completed_at: datetime
+    question_count: int
+    answered_count: int
+    average_score: float | None = None
+    average_confidence: float | None = None
+    summary: str
+    recommendation: str
+
+
 class ErrorDetail(BaseModel):
     code: str
     message: str
@@ -126,5 +201,15 @@ class ErrorDetail(BaseModel):
 
 class APIResponse(BaseModel):
     success: bool
-    data: InterviewData | InterviewQuestionData | InterviewQuestionsData | InterviewAnswerData | InterviewAnswerEvaluationData | None = None
+    data: (
+        InterviewData
+        | InterviewQuestionData
+        | InterviewQuestionsData
+        | InterviewAnswerData
+        | InterviewAnswerEvaluationData
+        | InterviewHistoryData
+        | InterviewFullSessionData
+        | CompleteInterviewData
+        | None
+    ) = None
     error: ErrorDetail | None = None

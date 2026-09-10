@@ -16,10 +16,13 @@ class Interview(Base):
     )
     personality: Mapped[str] = mapped_column(String(30), nullable=False)
     difficulty: Mapped[str] = mapped_column(String(20), nullable=False)
+    question_target: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="created", server_default="created")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recommendation: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     questions: Mapped[list["InterviewQuestion"]] = relationship(
         back_populates="interview", cascade="all, delete-orphan", order_by="InterviewQuestion.question_number"
@@ -89,6 +92,8 @@ class InterviewAnswerEvaluation(Base):
     weaknesses: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     missing_points: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     feedback: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence_score: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    confidence_rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
     evaluated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

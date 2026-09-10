@@ -18,10 +18,17 @@ work with no Gemini API key at all. So:
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import date
 
 from app.core.config import get_settings
-from app.schemas.interview import DifficultyEnum, GeneratedAnswerEvaluation, GeneratedQuestion
+from app.schemas.interview import (
+    DifficultyEnum,
+    GeneratedAnswerEvaluation,
+    GeneratedInterviewSummary,
+    GeneratedQuestion,
+    RecommendationEnum,
+)
 from app.schemas.resume import ParsedJDData, ParsedResumeData, WorkHistoryItem
 from app.services.resumes.taxonomy import (
     extract_all_skills,
@@ -52,6 +59,26 @@ _SECTION_HEADERS = {
     "education": ("education", "academic background"),
     "skills": ("skills", "technical skills", "core competencies"),
 }
+_HEDGE_WORDS = (
+    "i think", "i guess", "maybe", "probably", "possibly", "not sure", "i'm not sure",
+    "kind of", "sort of", "might", "could be", "i believe", "perhaps", "i suppose",
+    "not certain", "not entirely sure", "correct me if", "not 100%",
+)
+_DECISIVE_MARKERS = ("definitely", "certainly", "clearly", "specifically", "exactly", "always")
+
+
+@dataclass
+class AdaptationContext:
+    """Session-local signal used to steer the next question's difficulty/topic.
+
+    Only built from this interview's own prior answers (see
+    interview_questions.build_adaptation_context) — never persisted.
+    """
+
+    average_score: float
+    recent_weaknesses: list[str] = field(default_factory=list)
+    recent_missing_points: list[str] = field(default_factory=list)
+    suggested_difficulty: DifficultyEnum = DifficultyEnum.medium
 
 
 class GeminiService:
@@ -150,6 +177,7 @@ class GeminiService:
         question_number: int,
         previous_questions: list[str],
         resume_evidence: str,
+        adaptation: AdaptationContext | None = None,
     ) -> GeneratedQuestion:
         """Generate one validated question, with a deterministic offline fallback.
 
@@ -163,7 +191,7 @@ class GeminiService:
                     difficulty=difficulty, resume_skills=resume_skills,
                     matched_skills=matched_skills, missing_skills=missing_skills,
                     question_number=question_number, previous_questions=previous_questions,
-                    resume_evidence=resume_evidence,
+                    resume_evidence=resume_evidence, adaptation=adaptation,
                 )
                 if generated.question.strip() in {question.strip() for question in previous_questions}:
                     raise ValueError("Gemini returned a duplicate interview question")
@@ -175,7 +203,7 @@ class GeminiService:
             resume_skills=resume_skills, matched_skills=matched_skills,
             missing_skills=missing_skills, question_number=question_number,
             previous_questions=previous_questions,
-            resume_evidence=resume_evidence,
+            resume_evidence=resume_evidence, adaptation=adaptation,
         )
 
     def _generate_interview_question_via_gemini(self, **context) -> GeneratedQuestion:
@@ -238,7 +266,13 @@ class GeminiService:
             "answer that is mostly irrelevant must have very low relevance and an overall score no higher than "
             "35; a completely irrelevant/refusal answer must be no higher than 20. Fluency, length, grammar, "
             "or mentioning a topic keyword must not compensate for failing to answer the question. Evaluate "
-            "relevance, correctness, depth, clarity, and evidence/specificity. "
+            "relevance, correctness, depth, clarity, and evidence/specificity. Additionally judge the "
+            "candidate's apparent confidence in confidence_score (0-100) based only on the language of the "
+            "answer: hedging phrases (\"I think\", \"maybe\", \"I'm not sure\", \"possibly\"), vagueness, "
+            "specificity of claims, and decisiveness of phrasing. Confidence is independent of correctness: a "
+            "confident but wrong answer can still score high confidence, and a hedged but correct answer can "
+            "score lower confidence. Provide confidence_rationale as one concrete sentence naming the specific "
+            "language cues observed. "
             f"{behavioral_guidance}\n\n"
             f"QUESTION: {context['question']}\nQUESTION TYPE: {question_type}\nTOPIC: {context['topic']}\n"
             f"DIFFICULTY: {context['difficulty']}\nEXPECTED SKILLS: {context['expected_skills']}\n"
@@ -256,6 +290,19 @@ class GeminiService:
 
     @staticmethod
     def _interview_question_prompt(**context) -> str:
+        adaptation: AdaptationContext | None = context.get("adaptation")
+        adaptation_block = ""
+        if adaptation is not None:
+            adaptation_block = (
+                f"\nADAPTIVE CONTEXT: The candidate's running average score so far in this session is "
+                f"{adaptation.average_score:.0f}/100. Adjust the difficulty of this next question toward "
+                f"{adaptation.suggested_difficulty.value} accordingly (escalate if the average is high, ease off "
+                f"if it is low, keep steady if mid-range) while staying a reasonable variation of the requested "
+                f"DIFFICULTY below, not a hard override. Prior weaknesses to probe further: "
+                f"{adaptation.recent_weaknesses or 'none noted'}. Prior missing points to follow up on: "
+                f"{adaptation.recent_missing_points or 'none noted'}. Steer the topic toward these weak areas "
+                "when a relevant resume/JD angle exists; do not fabricate a weak area that was not reported.\n"
+            )
         return (
             "You are interviewing a real candidate for the target role. Create exactly one specific, "
             "natural interview question. Prioritize concrete candidate projects and experience from the "
@@ -276,10 +323,51 @@ class GeminiService:
             f"QUESTION NUMBER: {context['question_number']}\nRESUME SKILLS: {context['resume_skills']}\n"
             f"RESUME EVIDENCE (projects, experience, education):\n{context['resume_evidence'][:12000]}\n"
             f"MATCHED SKILLS: {context['matched_skills']}\nMISSING SKILLS: {context['missing_skills']}\n"
-            f"PREVIOUS QUESTIONS: {context['previous_questions']}\n\n"
+            f"PREVIOUS QUESTIONS: {context['previous_questions']}\n"
+            f"{adaptation_block}\n"
             "Generate exactly one natural question and the existing structured metadata. Do not repeat or merely "
             "rephrase previous questions. Maintain the selected personality and difficulty while staying relevant "
             "to the role, JD, resume, and ATS context."
+        )
+
+    # ------------------------------------------------------------------ #
+    # Interview session summary (on completion)
+    # ------------------------------------------------------------------ #
+    def generate_interview_summary(self, **context) -> GeneratedInterviewSummary:
+        """Return a closing session verdict, with a deterministic local fallback."""
+        if self._client is not None:
+            try:
+                return self._generate_interview_summary_via_gemini(**context)
+            except Exception as exc:
+                logger.warning("Gemini interview summary failed, using fallback: %s", exc)
+        return heuristic_interview_summary(**context)
+
+    def _generate_interview_summary_via_gemini(self, **context) -> GeneratedInterviewSummary:
+        from google.genai import types
+
+        response = self._client.models.generate_content(
+            model=settings.gemini_model,
+            contents=self._interview_summary_prompt(**context),
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json", response_schema=GeneratedInterviewSummary,
+            ),
+        )
+        return GeneratedInterviewSummary.model_validate(json.loads(response.text))
+
+    @staticmethod
+    def _interview_summary_prompt(**context) -> str:
+        return (
+            "Write a concise, honest hiring-panel-style summary of this practice interview session based only "
+            "on the aggregate scores and recurring strengths/weaknesses provided below. Do not invent specific "
+            "answer content that was not summarized here. Recommend one of strong_hire, hire, borderline, "
+            "no_hire based on the average score (>=85 strong_hire, >=70 hire, >=50 borderline, else no_hire) "
+            "unless the strengths/gaps clearly argue otherwise. Keep the summary to 3-5 sentences, encouraging "
+            "but candid.\n\n"
+            f"ROLE: {context['role']}\nPERSONALITY: {context['personality']}\n"
+            f"QUESTIONS ANSWERED: {context['question_count']}\nAVERAGE SCORE: {context['average_score']:.0f}/100\n"
+            f"AVERAGE CONFIDENCE: {context['average_confidence']:.0f}/100\n"
+            f"RECURRING STRENGTHS: {context['all_strengths']}\nRECURRING WEAKNESSES: {context['all_weaknesses']}\n"
+            f"RECURRING MISSING POINTS: {context['all_missing_points']}"
         )
 
 
@@ -314,9 +402,19 @@ def heuristic_interview_question(
     *, role: str, personality: str, difficulty: DifficultyEnum, resume_skills: list[str],
     matched_skills: list[str], missing_skills: list[str], question_number: int,
     previous_questions: list[str], resume_evidence: str,
+    adaptation: AdaptationContext | None = None,
 ) -> GeneratedQuestion:
     """Stable, context-driven fallback used when Gemini is unavailable."""
-    skills = missing_skills or matched_skills or resume_skills
+    difficulty = adaptation.suggested_difficulty if adaptation is not None else difficulty
+    weak_skills = (
+        [
+            skill for skill in missing_skills
+            if any(skill.lower() in point.lower() or point.lower() in skill.lower() for point in adaptation.recent_missing_points)
+        ]
+        if adaptation is not None and adaptation.recent_missing_points
+        else []
+    )
+    skills = weak_skills or missing_skills or matched_skills or resume_skills
     selected_skill = str(skills[(question_number - 1) % len(skills)]).strip() if skills else ""
     question_topic = _natural_topic(selected_skill)
     project = _resume_project_evidence(resume_evidence, previous_questions, question_number)
@@ -324,7 +422,7 @@ def heuristic_interview_question(
     # skills. Keep expected_skills truthful, but always give the persisted
     # question a schema-valid, useful topic label.
     project_topic = project.split(" — ", 1)[0].split(" - ", 1)[0].strip() if project else ""
-    topic = selected_skill or project_topic or "General Software Engineering"
+    topic = selected_skill or project_topic or role.strip() or "General Software Engineering"
     if personality == "behavioral" and project:
         project_title = project.split(" — ", 1)[0].split(" - ", 1)[0].strip()
         strategies = {
@@ -431,9 +529,42 @@ def heuristic_interview_question(
     )
 
 
+def heuristic_confidence(*, answer_text: str, duration_seconds: float | None) -> tuple[int, str]:
+    """Deterministic confidence estimate from hedge words, specificity, length, and pacing."""
+    lowered = answer_text.strip().lower()
+    words = re.findall(r"[a-zA-Z0-9+#.-]+", lowered)
+    word_count = len(words) or 1
+    hedge_hits = [phrase for phrase in _HEDGE_WORDS if phrase in lowered]
+    hedge_ratio = len(hedge_hits) / max(1, word_count / 40)
+    decisive_hits = sum(marker in lowered for marker in _DECISIVE_MARKERS)
+    specificity_bonus = min(15, word_count // 10)
+
+    score = 55
+    score -= min(40, round(hedge_ratio * 20))
+    score += min(20, decisive_hits * 5)
+    score += specificity_bonus
+    if word_count < 8:
+        score -= 15
+    if duration_seconds is not None:
+        if duration_seconds < 10:
+            score -= 10
+        elif duration_seconds > 180:
+            score -= 5
+    score = max(0, min(100, score))
+
+    if hedge_hits:
+        rationale = f"Hedging language detected ({', '.join(hedge_hits[:2])})."
+    elif decisive_hits:
+        rationale = "Decisive, specific phrasing with no hedging detected."
+    else:
+        rationale = "Neutral phrasing with no strong hedging or decisiveness markers detected."
+    return score, rationale
+
+
 def heuristic_answer_evaluation(
     *, question: str, question_type: str, topic: str, difficulty: str, expected_skills: list[str],
     personality: str, job_description: str, resume_evidence: str, answer_text: str,
+    duration_seconds: float | None = None,
 ) -> GeneratedAnswerEvaluation:
     """Conservative evaluator for unavailable/invalid AI responses.
 
@@ -448,7 +579,9 @@ def heuristic_answer_evaluation(
     if unknown or word_count < 3:
         return GeneratedAnswerEvaluation(
             overall_score=5, relevance_score=5, correctness_score=5, depth_score=0, clarity_score=20,
-            evidence_score=0, strengths=[], weaknesses=["The response does not answer the question."],
+            evidence_score=0, confidence_score=10,
+            confidence_rationale="Too short or a direct 'I don't know' to assess confidence.",
+            strengths=[], weaknesses=["The response does not answer the question."],
             missing_points=["A direct answer", "Reasoning or an example"],
             feedback=_feedback_tone(personality, "Start with a direct answer, then explain your reasoning with one concrete example."),
         )
@@ -494,10 +627,41 @@ def heuristic_answer_evaluation(
     if category == "strong" and missing:
         weaknesses.append(f"To make it stronger, add {missing[0]}.")
     feedback = _evaluation_feedback(personality, assessment, category)
+    confidence_score, confidence_rationale = heuristic_confidence(
+        answer_text=answer_text, duration_seconds=duration_seconds
+    )
     return GeneratedAnswerEvaluation(
         overall_score=overall, relevance_score=relevance, correctness_score=correctness, depth_score=depth,
-        clarity_score=clarity, evidence_score=evidence, strengths=strengths[:3], weaknesses=weaknesses[:3],
+        clarity_score=clarity, evidence_score=evidence, confidence_score=confidence_score,
+        confidence_rationale=confidence_rationale, strengths=strengths[:3], weaknesses=weaknesses[:3],
         missing_points=missing[:4], feedback=feedback,
+    )
+
+
+def heuristic_interview_summary(
+    *, question_count: int, average_score: float, average_confidence: float,
+    all_weaknesses: list[str], all_missing_points: list[str], all_strengths: list[str], **_context,
+) -> GeneratedInterviewSummary:
+    if average_score >= 85:
+        recommendation = RecommendationEnum.strong_hire
+    elif average_score >= 70:
+        recommendation = RecommendationEnum.hire
+    elif average_score >= 50:
+        recommendation = RecommendationEnum.borderline
+    else:
+        recommendation = RecommendationEnum.no_hire
+    gaps = list(dict.fromkeys([*all_weaknesses, *all_missing_points]))
+    strengths_text = ", ".join(item.rstrip(".") for item in all_strengths[:3])
+    gaps_text = ", ".join(item.rstrip(".") for item in gaps[:3])
+    strengths_line = f"Consistently showed strength in {strengths_text}. " if strengths_text else ""
+    gaps_line = f"Recurring gaps included {gaps_text}." if gaps_text else ""
+    summary = (
+        f"Across {question_count} question(s), the average score was {average_score:.0f}/100 with an average "
+        f"expressed confidence of {average_confidence:.0f}/100. {strengths_line}{gaps_line}"
+    ).strip()
+    return GeneratedInterviewSummary(
+        summary=summary or "Not enough answered questions to summarize this session.",
+        recommendation=recommendation, key_strengths=all_strengths[:6], key_gaps=gaps[:6],
     )
 
 
@@ -704,10 +868,12 @@ def _enforce_relevance_gate(generated: GeneratedAnswerEvaluation, **context) -> 
         "correctness_score": min(generated.correctness_score, fallback.correctness_score),
         "depth_score": min(generated.depth_score, fallback.depth_score),
         "evidence_score": min(generated.evidence_score, fallback.evidence_score),
+        "confidence_score": min(generated.confidence_score, fallback.confidence_score),
         "strengths": fallback.strengths,
         "weaknesses": fallback.weaknesses,
         "missing_points": fallback.missing_points,
         "feedback": fallback.feedback,
+        "confidence_rationale": fallback.confidence_rationale,
     })
 
 

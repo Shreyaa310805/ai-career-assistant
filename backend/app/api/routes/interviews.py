@@ -1,21 +1,24 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import DbSession, PremiumUser
 from app.models.application import Application
 from app.db.resume_session import get_db as get_resume_db
 from app.models.interview import Interview, InterviewAnswer, InterviewAnswerEvaluation, InterviewQuestion
 from app.schemas.interview import (
-    APIResponse, AnswerSubmitRequest, GenerateQuestionRequest, GeneratedAnswerEvaluation, GeneratedQuestion,
+    APIResponse, AnswerSubmitRequest, CompleteInterviewData, GeneratedAnswerEvaluation, GeneratedQuestion,
     InterviewAnswerData, InterviewAnswerEvaluationData, InterviewCreateRequest, InterviewData,
-    InterviewQuestionData, InterviewQuestionsData,
+    InterviewFullSessionData, InterviewHistoryData, InterviewQuestionData, InterviewQuestionsData,
+    InterviewQuestionWithAnswerData, InterviewSummaryData,
 )
-from app.services.interview_evaluation import evaluate_answer_for_application
-from app.services.interview_questions import generate_question_for_application
+from app.services.interview_evaluation import evaluate_answer_for_application, summarize_interview_for_application
+from app.services.interview_questions import build_adaptation_context, generate_question_for_application
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
@@ -28,6 +31,7 @@ def _interview_data(interview: Interview) -> InterviewData:
         difficulty=interview.difficulty,
         status=interview.status,
         question_count=len(interview.questions),
+        question_target=interview.question_target,
         started_at=interview.started_at,
     )
 
@@ -55,6 +59,7 @@ def _evaluation_data(evaluation: InterviewAnswerEvaluation) -> InterviewAnswerEv
         evaluation_id=evaluation.id, answer_id=evaluation.answer_id, overall_score=evaluation.overall_score,
         relevance_score=evaluation.relevance_score, correctness_score=evaluation.correctness_score,
         depth_score=evaluation.depth_score, clarity_score=evaluation.clarity_score, evidence_score=evaluation.evidence_score,
+        confidence_score=evaluation.confidence_score, confidence_rationale=evaluation.confidence_rationale,
         strengths=evaluation.strengths, weaknesses=evaluation.weaknesses, missing_points=evaluation.missing_points,
         feedback=evaluation.feedback, evaluated_at=evaluation.evaluated_at,
         technical_correctness=evaluation.correctness_score, relevance=evaluation.relevance_score,
@@ -82,6 +87,7 @@ def create_interview(payload: InterviewCreateRequest, db: DbSession, current_use
         application_id=payload.application_id,
         personality=payload.personality.value,
         difficulty=payload.difficulty.value,
+        question_target=payload.question_target,
         status="created",
     )
     db.add(interview)
@@ -128,14 +134,21 @@ def _answer_for_interview(answer_id: UUID, interview_id: UUID, db: DbSession) ->
 
 @router.post("/{interview_id}/questions", response_model=APIResponse)
 async def generate_question(
-    interview_id: UUID, payload: GenerateQuestionRequest, db: DbSession, current_user: PremiumUser,
+    interview_id: UUID, db: DbSession, current_user: PremiumUser,
     resume_db: AsyncSession = Depends(get_resume_db),
 ):
     interview = _owned_interview(interview_id, current_user.id, db)
     application = _owned_application(interview.application_id, current_user.id, db)
+    if interview.status == "completed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This interview session is already completed")
     question_number = (db.scalar(select(func.max(InterviewQuestion.question_number)).where(
         InterviewQuestion.interview_id == interview.id
     )) or 0) + 1
+    if question_number > interview.question_target:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"This session is limited to {interview.question_target} questions",
+        )
     current_interview_questions = db.scalars(select(InterviewQuestion.question).where(
         InterviewQuestion.interview_id == interview.id
     ).order_by(InterviewQuestion.question_number)).all()
@@ -145,9 +158,14 @@ async def generate_question(
     # Retain the current interview's ordered history while supplementing it
     # with prior sessions for this application only.
     previous_questions = list(dict.fromkeys([*current_interview_questions, *application_questions]))
+    # Adaptive: from question 3 onward, factor in this session's own running
+    # performance to steer difficulty/topic. Questions 1-2 use the fixed
+    # baseline personality/difficulty chosen at setup.
+    adaptation = build_adaptation_context(interview.id, question_number, db)
     generated: GeneratedQuestion = await generate_question_for_application(
         application=application, personality=interview.personality, difficulty=interview.difficulty,
         question_number=question_number, previous_questions=previous_questions, resume_db=resume_db,
+        adaptation=adaptation,
     )
     question = InterviewQuestion(
         interview_id=interview.id, question_number=question_number, question=generated.question,
@@ -155,6 +173,9 @@ async def generate_question(
         difficulty=generated.difficulty.value, expected_skills=generated.expected_skills, reason=generated.reason,
     )
     db.add(question)
+    if interview.status == "created":
+        interview.status = "in_progress"
+        interview.started_at = datetime.now(timezone.utc)
     try:
         db.commit()
     except IntegrityError:
@@ -189,11 +210,23 @@ def submit_answer(
     if not question:
         # Do not disclose whether a question exists in another session.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
-    answer = InterviewAnswer(
-        interview_id=interview_id, question_id=question.id, answer_text=payload.answer_text,
-        source=payload.source.value, duration_seconds=payload.duration_seconds,
+    # One answer per question: a resubmission updates the existing row in
+    # place instead of inserting a new one, otherwise answered_count (which
+    # counts evaluated answers) can exceed the number of questions asked.
+    answer = db.scalar(
+        select(InterviewAnswer)
+        .where(InterviewAnswer.interview_id == interview_id, InterviewAnswer.question_id == question.id)
+        .options(selectinload(InterviewAnswer.evaluation))
     )
-    db.add(answer)
+    if answer is None:
+        answer = InterviewAnswer(interview_id=interview_id, question_id=question.id)
+        db.add(answer)
+    else:
+        # Stale evaluation no longer matches the new answer text.
+        answer.evaluation = None
+    answer.answer_text = payload.answer_text
+    answer.source = payload.source.value
+    answer.duration_seconds = payload.duration_seconds
     db.commit()
     db.refresh(answer)
     return APIResponse(success=True, data=_answer_data(answer), error=None)
@@ -226,6 +259,8 @@ async def evaluate_answer(
     evaluation.depth_score = generated.depth_score
     evaluation.clarity_score = generated.clarity_score
     evaluation.evidence_score = generated.evidence_score
+    evaluation.confidence_score = generated.confidence_score
+    evaluation.confidence_rationale = generated.confidence_rationale
     evaluation.strengths = generated.strengths
     evaluation.weaknesses = generated.weaknesses
     evaluation.missing_points = generated.missing_points
@@ -233,3 +268,149 @@ async def evaluate_answer(
     db.commit()
     db.refresh(evaluation)
     return APIResponse(success=True, data=_evaluation_data(evaluation), error=None)
+
+
+@router.get("", response_model=APIResponse)
+def list_interviews(
+    db: DbSession, current_user: PremiumUser,
+    application_id: UUID | None = None,
+    status_filter: str | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=50),
+):
+    filters = [Application.user_id == current_user.id, Application.is_scratch.is_(False)]
+    if application_id is not None:
+        filters.append(Interview.application_id == application_id)
+    if status_filter is not None:
+        filters.append(Interview.status == status_filter)
+
+    base_query = select(Interview).join(Application, Interview.application_id == Application.id).where(*filters)
+    total = db.scalar(select(func.count()).select_from(base_query.subquery())) or 0
+    interviews = db.scalars(
+        base_query.order_by(Interview.created_at.desc())
+        .offset((page - 1) * page_size).limit(page_size)
+        .options(selectinload(Interview.questions))
+    ).all()
+
+    interview_ids = [interview.id for interview in interviews]
+    aggregates: dict[UUID, tuple[int, float, float]] = {}
+    if interview_ids:
+        for interview_id_, answered_count, average_score, average_confidence in db.execute(
+            select(
+                InterviewAnswer.interview_id,
+                func.count(InterviewAnswerEvaluation.id),
+                func.avg(InterviewAnswerEvaluation.overall_score),
+                func.avg(InterviewAnswerEvaluation.confidence_score),
+            )
+            .join(InterviewAnswerEvaluation, InterviewAnswerEvaluation.answer_id == InterviewAnswer.id)
+            .where(InterviewAnswer.interview_id.in_(interview_ids))
+            .group_by(InterviewAnswer.interview_id)
+        ).all():
+            aggregates[interview_id_] = (answered_count, average_score, average_confidence)
+
+    items = []
+    for interview in interviews:
+        answered_count, average_score, average_confidence = aggregates.get(interview.id, (0, None, None))
+        items.append(InterviewSummaryData(
+            interview_id=interview.id, application_id=interview.application_id, personality=interview.personality,
+            difficulty=interview.difficulty, status=interview.status, question_count=len(interview.questions),
+            question_target=interview.question_target,
+            answered_count=answered_count, average_score=average_score, average_confidence=average_confidence,
+            started_at=interview.started_at, completed_at=interview.completed_at, created_at=interview.created_at,
+            recommendation=interview.recommendation,
+        ))
+    return APIResponse(
+        success=True, data=InterviewHistoryData(items=items, total=total, page=page, page_size=page_size), error=None,
+    )
+
+
+@router.get("/{interview_id}/full", response_model=APIResponse)
+def get_interview_full(interview_id: UUID, db: DbSession, current_user: PremiumUser):
+    interview = db.scalar(
+        select(Interview)
+        .join(Application, Interview.application_id == Application.id)
+        .where(
+            Interview.id == interview_id,
+            Application.user_id == current_user.id,
+            Application.is_scratch.is_(False),
+        )
+        .options(
+            selectinload(Interview.questions)
+            .selectinload(InterviewQuestion.answers)
+            .selectinload(InterviewAnswer.evaluation)
+        )
+    )
+    if not interview:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
+
+    items = []
+    scores: list[int] = []
+    confidences: list[int] = []
+    for question in interview.questions:
+        answer = question.answers[0] if question.answers else None
+        evaluation = answer.evaluation if answer else None
+        if evaluation is not None:
+            scores.append(evaluation.overall_score)
+            confidences.append(evaluation.confidence_score)
+        items.append(InterviewQuestionWithAnswerData(
+            question=_question_data(question),
+            answer=_answer_data(answer) if answer else None,
+            evaluation=_evaluation_data(evaluation) if evaluation else None,
+        ))
+    return APIResponse(success=True, data=InterviewFullSessionData(
+        interview_id=interview.id, application_id=interview.application_id, personality=interview.personality,
+        difficulty=interview.difficulty, status=interview.status, question_target=interview.question_target,
+        started_at=interview.started_at,
+        completed_at=interview.completed_at, created_at=interview.created_at, summary=interview.summary,
+        recommendation=interview.recommendation,
+        average_score=(sum(scores) / len(scores)) if scores else None,
+        average_confidence=(sum(confidences) / len(confidences)) if confidences else None,
+        items=items,
+    ), error=None)
+
+
+@router.post("/{interview_id}/complete", response_model=APIResponse)
+async def complete_interview(interview_id: UUID, db: DbSession, current_user: PremiumUser):
+    interview = _owned_interview(interview_id, current_user.id, db)
+    application = _owned_application(interview.application_id, current_user.id, db)
+    if interview.status == "completed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This interview session is already completed")
+
+    question_count = db.scalar(select(func.count()).where(InterviewQuestion.interview_id == interview.id)) or 0
+    evaluations = db.scalars(
+        select(InterviewAnswerEvaluation)
+        .join(InterviewAnswer, InterviewAnswerEvaluation.answer_id == InterviewAnswer.id)
+        .where(InterviewAnswer.interview_id == interview.id)
+    ).all()
+    answered_count = len(evaluations)
+    average_score = (sum(e.overall_score for e in evaluations) / answered_count) if answered_count else 0.0
+    average_confidence = (sum(e.confidence_score for e in evaluations) / answered_count) if answered_count else 0.0
+    all_weaknesses = list(dict.fromkeys(w for e in evaluations for w in e.weaknesses))
+    all_missing_points = list(dict.fromkeys(m for e in evaluations for m in e.missing_points))
+    all_strengths = list(dict.fromkeys(s for e in evaluations for s in e.strengths))
+
+    generated = summarize_interview_for_application(
+        application=application, interview=interview, question_count=question_count,
+        answered_count=answered_count, average_score=average_score, average_confidence=average_confidence,
+        all_weaknesses=all_weaknesses, all_missing_points=all_missing_points, all_strengths=all_strengths,
+    )
+    interview.status = "completed"
+    interview.completed_at = datetime.now(timezone.utc)
+    interview.summary = generated.summary
+    interview.recommendation = generated.recommendation.value
+    db.commit()
+    return APIResponse(success=True, data=CompleteInterviewData(
+        interview_id=interview.id, status=interview.status, completed_at=interview.completed_at,
+        question_count=question_count, answered_count=answered_count,
+        average_score=average_score if answered_count else None,
+        average_confidence=average_confidence if answered_count else None,
+        summary=interview.summary, recommendation=interview.recommendation,
+    ), error=None)
+
+
+@router.delete("/{interview_id}", response_model=APIResponse)
+def delete_interview(interview_id: UUID, db: DbSession, current_user: PremiumUser):
+    interview = _owned_interview(interview_id, current_user.id, db)
+    db.delete(interview)
+    db.commit()
+    return APIResponse(success=True, data=None, error=None)

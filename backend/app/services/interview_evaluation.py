@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.application import Application
 from app.models.interview import Interview, InterviewAnswer, InterviewQuestion
 from app.models.resume import AtsReport, Resume
-from app.schemas.interview import GeneratedAnswerEvaluation
+from app.schemas.interview import GeneratedAnswerEvaluation, GeneratedInterviewSummary
 from app.services.resumes.gemini_service import get_gemini_service
 
 
@@ -42,5 +42,18 @@ async def evaluate_answer_for_application(
         question=question.question, question_type=question.question_type, topic=question.topic,
         difficulty=question.difficulty, expected_skills=context_skills, personality=interview.personality,
         job_description=application.job_description or "", resume_evidence=resume_evidence,
-        answer_text=answer.answer_text,
+        answer_text=answer.answer_text, duration_seconds=answer.duration_seconds,
+    )
+
+
+def summarize_interview_for_application(
+    *, application: Application, interview: Interview, question_count: int, answered_count: int,
+    average_score: float, average_confidence: float, all_weaknesses: list[str],
+    all_missing_points: list[str], all_strengths: list[str],
+) -> GeneratedInterviewSummary:
+    """Generate the closing session summary/recommendation shown on completion."""
+    return get_gemini_service().generate_interview_summary(
+        role=application.role, personality=interview.personality, question_count=question_count,
+        answered_count=answered_count, average_score=average_score, average_confidence=average_confidence,
+        all_weaknesses=all_weaknesses, all_missing_points=all_missing_points, all_strengths=all_strengths,
     )

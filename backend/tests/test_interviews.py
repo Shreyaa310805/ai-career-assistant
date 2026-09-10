@@ -5,8 +5,13 @@ from tests.test_applications import premium_token_for, token_for
 from tests.test_auth import client
 from app.schemas.interview import DifficultyEnum, GeneratedQuestion
 from app.services.interview_questions import generate_question_for_application
-from app.schemas.interview import GeneratedAnswerEvaluation
-from app.services.resumes.gemini_service import GeminiService, heuristic_answer_evaluation, heuristic_interview_question
+from app.schemas.interview import GeneratedAnswerEvaluation, GeneratedInterviewSummary, RecommendationEnum
+from app.services.resumes.gemini_service import (
+    GeminiService,
+    heuristic_answer_evaluation,
+    heuristic_confidence,
+    heuristic_interview_question,
+)
 
 
 def create_application(headers: dict[str, str]) -> str:
@@ -41,6 +46,7 @@ def test_interview_creation_preserves_contract_and_requires_premium():
         "difficulty": "medium",
         "status": "created",
         "question_count": 0,
+        "question_target": 5,
         "started_at": None,
     }
 
@@ -331,7 +337,7 @@ def test_question_fallback_has_a_valid_topic_when_no_skills_are_available(monkey
         resume_skills=[], matched_skills=[], missing_skills=[], question_number=1,
         previous_questions=[], resume_evidence="",
     )
-    assert generated.topic == "General Software Engineering"
+    assert generated.topic == "Backend Intern"
     assert generated.question
     assert generated.expected_skills == []
 
@@ -423,7 +429,9 @@ def fake_evaluator(*, overall=78):
         def evaluate_interview_answer(self, **context):
             return GeneratedAnswerEvaluation(
                 overall_score=overall, relevance_score=80, correctness_score=75, depth_score=70,
-                clarity_score=85, evidence_score=65, strengths=["Directly answers the question."],
+                clarity_score=85, evidence_score=65, confidence_score=72,
+                confidence_rationale="Decisive phrasing with no hedging detected.",
+                strengths=["Directly answers the question."],
                 weaknesses=["Could include an edge case."], missing_points=["A concrete example"],
                 feedback=f"Evaluated {context['question_type']} answer.",
             )
@@ -658,3 +666,563 @@ def test_fallback_evaluation_handles_friendly_decision_tradeoff_components():
     assert {"the alternatives considered", "the decision", "the reasoning or trade-off", "a practical benefit or consequence"} <= set(
         item.removeprefix("You explained ").rstrip(".") for item in strong.strengths
     )
+
+
+def fake_gemini_full(*, overall=78, recommendation=RecommendationEnum.hire):
+    """Combined fake covering both evaluate + summarize, for tests that call
+    /evaluate and /complete under one monkeypatch of the same service module."""
+    class FakeGemini:
+        def evaluate_interview_answer(self, **context):
+            return fake_evaluator(overall=overall).evaluate_interview_answer(**context)
+
+        def generate_interview_summary(self, **context):
+            return GeneratedInterviewSummary(
+                summary="This session showed a solid grasp of the fundamentals with room to grow in edge cases.",
+                recommendation=recommendation, key_strengths=["Directly answers the question."],
+                key_gaps=["A concrete example"],
+            )
+    return FakeGemini()
+
+
+def _fake_question_generator(contexts: list[dict]):
+    class FakeGemini:
+        def generate_interview_question(self, **context):
+            contexts.append(context)
+            return GeneratedQuestion(
+                question=f"Adaptive question {context['question_number']}?", topic="Python",
+                question_type="technical", difficulty=context["difficulty"],
+                expected_skills=["Python"], reason="Adaptive test question.",
+            )
+    return FakeGemini()
+
+
+# --------------------------------------------------------------------- #
+# Confidence scoring
+# --------------------------------------------------------------------- #
+def test_answer_evaluation_includes_confidence_score_and_rationale_from_gemini(monkeypatch):
+    owner = premium_token_for("confidence-gemini@example.com", "Confidence Gemini")
+    interview_id, question_id = create_interview_question(owner, monkeypatch)
+    answer = submit_answer(owner, interview_id, question_id).json()["data"]
+
+    class FakeGemini:
+        def evaluate_interview_answer(self, **context):
+            return GeneratedAnswerEvaluation(
+                overall_score=80, relevance_score=80, correctness_score=75, depth_score=70, clarity_score=85,
+                evidence_score=65, confidence_score=91, confidence_rationale="Decisive, specific phrasing.",
+                strengths=["Directly answers the question."], weaknesses=["Could include an edge case."],
+                missing_points=["A concrete example"], feedback=f"Evaluated {context['question_type']} answer.",
+            )
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: FakeGemini())
+    response = client.post(f"/api/v1/interviews/{interview_id}/answers/{answer['answer_id']}/evaluate", headers=owner)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["confidence_score"] == 91
+    assert data["confidence_rationale"] == "Decisive, specific phrasing."
+
+
+def test_heuristic_confidence_penalizes_hedge_words():
+    base = dict(
+        question="Walk me through a difficult bug or edge case in Python. How did you diagnose and fix it?",
+        question_type="technical", topic="Python", difficulty="medium", expected_skills=["Python"],
+        personality="technical", job_description="", resume_evidence="",
+    )
+    decisive = heuristic_answer_evaluation(
+        **base,
+        answer_text=("A missing input caused a Python error. I reproduced it with the failing value, traced the "
+                     "values, and found an invalid assumption about missing fields. I added validation and a "
+                     "safe fallback, then tested empty, invalid, and boundary inputs. I learned to check this path early."),
+    )
+    hedged = heuristic_answer_evaluation(
+        **base,
+        answer_text=("I think maybe a missing input caused a Python error. I guess I probably reproduced it with "
+                     "the failing value, and I'm not sure but perhaps traced the values to find what might have "
+                     "been an invalid assumption about missing fields. I think I possibly added validation and a "
+                     "fallback, then maybe tested some inputs. I guess I learned to check this path early."),
+    )
+    assert decisive.confidence_score > hedged.confidence_score
+
+
+def test_heuristic_confidence_uses_duration_seconds():
+    text = ("I reproduced the failing case, traced the values, found the invalid assumption, and fixed it with a "
+            "validated fallback.")
+    quick_score, _ = heuristic_confidence(answer_text=text, duration_seconds=5)
+    unhurried_score, _ = heuristic_confidence(answer_text=text, duration_seconds=60)
+    assert quick_score < unhurried_score
+
+
+def test_confidence_is_capped_when_relevance_gate_triggers(monkeypatch):
+    base = dict(
+        question="Walk me through a difficult bug or edge case in Python. How did you diagnose and fix it?",
+        question_type="technical", topic="Python", difficulty="medium", expected_skills=["Python"],
+        personality="technical", job_description="", resume_evidence="",
+    )
+    irrelevant_answer = "I like Python because its syntax is simple, and I have learned Python, Java, C, C++, and SQL."
+    fallback = heuristic_answer_evaluation(**base, answer_text=irrelevant_answer)
+
+    service = GeminiService()
+    service._client = object()
+    overconfident = GeneratedAnswerEvaluation(
+        overall_score=95, relevance_score=95, correctness_score=90, depth_score=90, clarity_score=95,
+        evidence_score=90, confidence_score=95, confidence_rationale="Confident but off-topic.",
+        strengths=["Fluent."], weaknesses=[], missing_points=[], feedback="Fluent but off-topic.",
+    )
+    monkeypatch.setattr(service, "_evaluate_interview_answer_via_gemini", lambda **_: overconfident)
+    enforced = service.evaluate_interview_answer(**base, answer_text=irrelevant_answer)
+    assert enforced.confidence_score == fallback.confidence_score
+    assert enforced.confidence_score < 95
+
+
+def test_evaluate_answer_passes_duration_seconds_to_gemini_service(monkeypatch):
+    owner = premium_token_for("duration-passthrough@example.com", "Duration Passthrough")
+    interview_id, question_id = create_interview_question(owner, monkeypatch)
+    answer = submit_answer(owner, interview_id, question_id, duration_seconds=17).json()["data"]
+
+    captured = {}
+
+    class FakeGemini:
+        def evaluate_interview_answer(self, **context):
+            captured.update(context)
+            return fake_evaluator().evaluate_interview_answer(**context)
+
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: FakeGemini())
+    client.post(f"/api/v1/interviews/{interview_id}/answers/{answer['answer_id']}/evaluate", headers=owner)
+    assert captured["duration_seconds"] == 17
+
+
+# --------------------------------------------------------------------- #
+# Adaptive questioning
+# --------------------------------------------------------------------- #
+def test_first_two_questions_use_baseline_difficulty_no_adaptation(monkeypatch):
+    owner = premium_token_for("adaptive-baseline@example.com", "Adaptive Baseline")
+    application_id = create_application(owner)
+    interview_id = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": application_id, "personality": "technical", "difficulty": "medium"},
+    ).json()["data"]["interview_id"]
+
+    contexts: list[dict] = []
+    monkeypatch.setattr("app.services.interview_questions.get_gemini_service", lambda: _fake_question_generator(contexts))
+    client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner)
+    client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner)
+    assert contexts[0]["adaptation"] is None
+    assert contexts[1]["adaptation"] is None
+
+
+def test_third_question_receives_adaptation_context_from_prior_scores(monkeypatch):
+    owner = premium_token_for("adaptive-low@example.com", "Adaptive Low")
+    application_id = create_application(owner)
+    interview_id = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": application_id, "personality": "technical", "difficulty": "medium"},
+    ).json()["data"]["interview_id"]
+
+    contexts: list[dict] = []
+    monkeypatch.setattr("app.services.interview_questions.get_gemini_service", lambda: _fake_question_generator(contexts))
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: fake_evaluator(overall=30))
+
+    for _ in range(2):
+        question = client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner).json()["data"]
+        answer = submit_answer(owner, interview_id, question["question_id"]).json()["data"]
+        client.post(f"/api/v1/interviews/{interview_id}/answers/{answer['answer_id']}/evaluate", headers=owner)
+
+    client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner)
+    adaptation = contexts[2]["adaptation"]
+    assert adaptation is not None
+    assert adaptation.average_score == 30
+    assert adaptation.suggested_difficulty == DifficultyEnum.easy
+    assert "Could include an edge case." in adaptation.recent_weaknesses
+    assert "A concrete example" in adaptation.recent_missing_points
+
+
+def test_adaptation_escalates_difficulty_after_strong_answers(monkeypatch):
+    owner = premium_token_for("adaptive-high@example.com", "Adaptive High")
+    application_id = create_application(owner)
+    interview_id = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": application_id, "personality": "technical", "difficulty": "medium"},
+    ).json()["data"]["interview_id"]
+
+    contexts: list[dict] = []
+    monkeypatch.setattr("app.services.interview_questions.get_gemini_service", lambda: _fake_question_generator(contexts))
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: fake_evaluator(overall=90))
+
+    for _ in range(2):
+        question = client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner).json()["data"]
+        answer = submit_answer(owner, interview_id, question["question_id"]).json()["data"]
+        client.post(f"/api/v1/interviews/{interview_id}/answers/{answer['answer_id']}/evaluate", headers=owner)
+
+    client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner)
+    adaptation = contexts[2]["adaptation"]
+    assert adaptation is not None
+    assert adaptation.average_score == 90
+    assert adaptation.suggested_difficulty == DifficultyEnum.hard
+
+
+def test_adaptation_is_isolated_to_its_own_interview(monkeypatch):
+    owner = premium_token_for("adaptive-isolated@example.com", "Adaptive Isolated")
+    application_id = create_application(owner)
+
+    interview_a = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": application_id, "personality": "technical", "difficulty": "medium"},
+    ).json()["data"]["interview_id"]
+    contexts_a: list[dict] = []
+    monkeypatch.setattr("app.services.interview_questions.get_gemini_service", lambda: _fake_question_generator(contexts_a))
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: fake_evaluator(overall=20))
+    for _ in range(2):
+        question = client.post(f"/api/v1/interviews/{interview_a}/questions", headers=owner).json()["data"]
+        answer = submit_answer(owner, interview_a, question["question_id"]).json()["data"]
+        client.post(f"/api/v1/interviews/{interview_a}/answers/{answer['answer_id']}/evaluate", headers=owner)
+
+    interview_b = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": application_id, "personality": "technical", "difficulty": "medium"},
+    ).json()["data"]["interview_id"]
+    contexts_b: list[dict] = []
+    monkeypatch.setattr("app.services.interview_questions.get_gemini_service", lambda: _fake_question_generator(contexts_b))
+    for _ in range(3):
+        client.post(f"/api/v1/interviews/{interview_b}/questions", headers=owner)
+    assert contexts_b[2]["adaptation"] is None
+
+
+def test_generate_question_works_without_request_body(monkeypatch):
+    owner = premium_token_for("no-body@example.com", "No Body")
+    application_id = create_application(owner)
+    interview_id = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": application_id, "personality": "technical", "difficulty": "medium"},
+    ).json()["data"]["interview_id"]
+
+    class FakeGemini:
+        def generate_interview_question(self, **_context):
+            return GeneratedQuestion(
+                question="How would you design a rate limiter?", topic="Systems", question_type="technical",
+                difficulty=DifficultyEnum.medium, expected_skills=["Systems"], reason="No-body regression test.",
+            )
+    monkeypatch.setattr("app.services.interview_questions.get_gemini_service", lambda: FakeGemini())
+    response = client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner)
+    assert response.status_code == 200
+
+
+# --------------------------------------------------------------------- #
+# Session lifecycle
+# --------------------------------------------------------------------- #
+def test_interview_status_transitions_to_in_progress_and_sets_started_at(monkeypatch):
+    owner = premium_token_for("lifecycle@example.com", "Lifecycle")
+    interview_id, _ = create_interview_question(owner, monkeypatch)
+    session = client.get(f"/api/v1/interviews/{interview_id}", headers=owner).json()["data"]
+    assert session["status"] == "in_progress"
+    started_at = session["started_at"]
+    assert started_at is not None
+
+    class FakeGemini:
+        def generate_interview_question(self, **_context):
+            return GeneratedQuestion(
+                question="How would you design a cache eviction policy?", topic="Systems", question_type="technical",
+                difficulty=DifficultyEnum.medium, expected_skills=["Systems"], reason="Second question.",
+            )
+    monkeypatch.setattr("app.services.interview_questions.get_gemini_service", lambda: FakeGemini())
+    client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner)
+    session_after = client.get(f"/api/v1/interviews/{interview_id}", headers=owner).json()["data"]
+    assert session_after["started_at"] == started_at
+
+
+def test_generate_question_rejected_after_completion(monkeypatch):
+    owner = premium_token_for("complete-block@example.com", "Complete Block")
+    interview_id, question_id = create_interview_question(owner, monkeypatch)
+    answer = submit_answer(owner, interview_id, question_id).json()["data"]
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: fake_gemini_full())
+    client.post(f"/api/v1/interviews/{interview_id}/answers/{answer['answer_id']}/evaluate", headers=owner)
+    completed = client.post(f"/api/v1/interviews/{interview_id}/complete", headers=owner)
+    assert completed.status_code == 200
+
+    response = client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner)
+    assert response.status_code == 409
+
+
+# --------------------------------------------------------------------- #
+# History list
+# --------------------------------------------------------------------- #
+def test_list_interviews_is_owner_scoped_and_paginated(monkeypatch):
+    owner = premium_token_for("history-owner@example.com", "History Owner")
+    other = premium_token_for("history-other@example.com", "History Other")
+    app1 = create_application(owner)
+    app2 = create_application(owner)
+    interview1 = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": app1, "personality": "technical", "difficulty": "medium"},
+    ).json()["data"]["interview_id"]
+    interview2 = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": app2, "personality": "friendly", "difficulty": "easy"},
+    ).json()["data"]["interview_id"]
+    other_app = create_application(other)
+    client.post(
+        "/api/v1/interviews", headers=other,
+        json={"application_id": other_app, "personality": "technical", "difficulty": "medium"},
+    )
+
+    page1 = client.get("/api/v1/interviews", headers=owner, params={"page": 1, "page_size": 1}).json()["data"]
+    assert page1["total"] == 2
+    assert len(page1["items"]) == 1
+    page2 = client.get("/api/v1/interviews", headers=owner, params={"page": 2, "page_size": 1}).json()["data"]
+    assert len(page2["items"]) == 1
+    seen_ids = {page1["items"][0]["interview_id"], page2["items"][0]["interview_id"]}
+    assert seen_ids == {interview1, interview2}
+
+    other_listed = client.get("/api/v1/interviews", headers=other).json()["data"]
+    assert other_listed["total"] == 1
+    assert all(item["interview_id"] != interview1 for item in other_listed["items"])
+
+
+def test_list_interviews_filters_by_application_id(monkeypatch):
+    owner = premium_token_for("history-filter@example.com", "History Filter")
+    app1 = create_application(owner)
+    app2 = create_application(owner)
+    interview1 = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": app1, "personality": "technical", "difficulty": "medium"},
+    ).json()["data"]["interview_id"]
+    client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": app2, "personality": "technical", "difficulty": "medium"},
+    )
+
+    filtered = client.get("/api/v1/interviews", headers=owner, params={"application_id": app1}).json()["data"]
+    assert filtered["total"] == 1
+    assert filtered["items"][0]["interview_id"] == interview1
+
+
+def test_list_interviews_computes_average_score_without_denormalized_storage(monkeypatch):
+    owner = premium_token_for("history-avg@example.com", "History Avg")
+    interview_id, question_id = create_interview_question(owner, monkeypatch)
+    answer1 = submit_answer(owner, interview_id, question_id).json()["data"]
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: fake_evaluator(overall=80))
+    client.post(f"/api/v1/interviews/{interview_id}/answers/{answer1['answer_id']}/evaluate", headers=owner)
+
+    class FakeGeminiQ2:
+        def generate_interview_question(self, **_context):
+            return GeneratedQuestion(
+                question="How would you design a URL shortener?", topic="Systems", question_type="technical",
+                difficulty=DifficultyEnum.medium, expected_skills=["Systems"], reason="Second question.",
+            )
+    monkeypatch.setattr("app.services.interview_questions.get_gemini_service", lambda: FakeGeminiQ2())
+    question2 = client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner).json()["data"]
+    answer2 = submit_answer(owner, interview_id, question2["question_id"]).json()["data"]
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: fake_evaluator(overall=60))
+    client.post(f"/api/v1/interviews/{interview_id}/answers/{answer2['answer_id']}/evaluate", headers=owner)
+
+    application_id = client.get(f"/api/v1/interviews/{interview_id}", headers=owner).json()["data"]["application_id"]
+    listed = client.get("/api/v1/interviews", headers=owner, params={"application_id": application_id}).json()["data"]
+    item = next(i for i in listed["items"] if i["interview_id"] == interview_id)
+    assert item["answered_count"] == 2
+    assert item["average_score"] == 70.0
+    assert item["average_confidence"] == 72.0
+
+
+# --------------------------------------------------------------------- #
+# Full nested session fetch
+# --------------------------------------------------------------------- #
+def test_get_interview_full_returns_ordered_nested_tree_with_unanswered_questions(monkeypatch):
+    owner = premium_token_for("full-tree@example.com", "Full Tree")
+    interview_id, question_id = create_interview_question(owner, monkeypatch)
+    answer = submit_answer(owner, interview_id, question_id).json()["data"]
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: fake_evaluator(overall=88))
+    client.post(f"/api/v1/interviews/{interview_id}/answers/{answer['answer_id']}/evaluate", headers=owner)
+
+    class FakeGeminiQ2:
+        def generate_interview_question(self, **_context):
+            return GeneratedQuestion(
+                question="How would you design a notification service?", topic="Systems", question_type="technical",
+                difficulty=DifficultyEnum.medium, expected_skills=["Systems"], reason="Second question.",
+            )
+    monkeypatch.setattr("app.services.interview_questions.get_gemini_service", lambda: FakeGeminiQ2())
+    client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner)  # left unanswered
+
+    full = client.get(f"/api/v1/interviews/{interview_id}/full", headers=owner).json()["data"]
+    assert [item["question"]["question_number"] for item in full["items"]] == [1, 2]
+    assert full["items"][0]["answer"] is not None
+    assert full["items"][0]["evaluation"]["overall_score"] == 88
+    assert full["items"][1]["answer"] is None
+    assert full["items"][1]["evaluation"] is None
+    assert full["average_score"] == 88
+
+
+def test_get_interview_full_is_owner_scoped(monkeypatch):
+    owner = premium_token_for("full-scope-owner@example.com", "Full Scope Owner")
+    other = premium_token_for("full-scope-other@example.com", "Full Scope Other")
+    interview_id, _ = create_interview_question(owner, monkeypatch)
+    assert client.get(f"/api/v1/interviews/{interview_id}/full", headers=owner).status_code == 200
+    assert client.get(f"/api/v1/interviews/{interview_id}/full", headers=other).status_code == 404
+
+
+# --------------------------------------------------------------------- #
+# Session completion
+# --------------------------------------------------------------------- #
+def test_complete_interview_computes_aggregates_and_persists_summary(monkeypatch):
+    owner = premium_token_for("complete-aggregate@example.com", "Complete Aggregate")
+    interview_id, question_id = create_interview_question(owner, monkeypatch)
+    answer = submit_answer(owner, interview_id, question_id).json()["data"]
+
+    class FakeGemini:
+        def evaluate_interview_answer(self, **context):
+            return GeneratedAnswerEvaluation(
+                overall_score=80, relevance_score=85, correctness_score=80, depth_score=75, clarity_score=85,
+                evidence_score=70, confidence_score=72, confidence_rationale="Decisive phrasing.",
+                strengths=["Clear reasoning."], weaknesses=["Could add an edge case."], missing_points=["A metric"],
+                feedback="Solid answer.",
+            )
+
+        def generate_interview_summary(self, **context):
+            return GeneratedInterviewSummary(
+                summary="This candidate demonstrated solid technical reasoning throughout the session.",
+                recommendation=RecommendationEnum.hire, key_strengths=["Clear reasoning."], key_gaps=["A metric"],
+            )
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: FakeGemini())
+    client.post(f"/api/v1/interviews/{interview_id}/answers/{answer['answer_id']}/evaluate", headers=owner)
+
+    completed = client.post(f"/api/v1/interviews/{interview_id}/complete", headers=owner)
+    assert completed.status_code == 200
+    data = completed.json()["data"]
+    assert data["status"] == "completed"
+    assert data["answered_count"] == 1
+    assert data["average_score"] == 80
+    assert data["average_confidence"] == 72
+    assert data["recommendation"] == "hire"
+    assert "technical reasoning" in data["summary"]
+
+    full = client.get(f"/api/v1/interviews/{interview_id}/full", headers=owner).json()["data"]
+    assert full["status"] == "completed"
+    assert full["recommendation"] == "hire"
+    assert full["average_score"] == 80
+
+
+def test_complete_interview_uses_heuristic_summary_when_gemini_disabled(monkeypatch):
+    owner = premium_token_for("complete-heuristic@example.com", "Complete Heuristic")
+    interview_id, question_id = create_interview_question(owner, monkeypatch)
+    answer = submit_answer(owner, interview_id, question_id, answer_text="I don't know").json()["data"]
+
+    disabled_service = GeminiService()
+    disabled_service._client = None
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: disabled_service)
+    client.post(f"/api/v1/interviews/{interview_id}/answers/{answer['answer_id']}/evaluate", headers=owner)
+
+    completed = client.post(f"/api/v1/interviews/{interview_id}/complete", headers=owner)
+    assert completed.status_code == 200
+    data = completed.json()["data"]
+    assert data["answered_count"] == 1
+    assert data["recommendation"] == "no_hire"
+    assert data["summary"]
+
+
+def test_complete_interview_is_idempotent_guard(monkeypatch):
+    owner = premium_token_for("complete-guard@example.com", "Complete Guard")
+    interview_id, question_id = create_interview_question(owner, monkeypatch)
+    answer = submit_answer(owner, interview_id, question_id).json()["data"]
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: fake_gemini_full())
+    client.post(f"/api/v1/interviews/{interview_id}/answers/{answer['answer_id']}/evaluate", headers=owner)
+    first = client.post(f"/api/v1/interviews/{interview_id}/complete", headers=owner)
+    second = client.post(f"/api/v1/interviews/{interview_id}/complete", headers=owner)
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
+def test_complete_interview_with_zero_answered_questions(monkeypatch):
+    owner = premium_token_for("complete-zero@example.com", "Complete Zero")
+    interview_id, _ = create_interview_question(owner, monkeypatch)
+    disabled_service = GeminiService()
+    disabled_service._client = None
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: disabled_service)
+
+    completed = client.post(f"/api/v1/interviews/{interview_id}/complete", headers=owner)
+    assert completed.status_code == 200
+    data = completed.json()["data"]
+    assert data["answered_count"] == 0
+    assert data["average_score"] is None
+    assert data["average_confidence"] is None
+    assert data["recommendation"] == "no_hire"
+    assert data["summary"]
+
+
+def test_complete_interview_is_owner_scoped(monkeypatch):
+    owner = premium_token_for("complete-scope-owner@example.com", "Complete Scope Owner")
+    other = premium_token_for("complete-scope-other@example.com", "Complete Scope Other")
+    interview_id, question_id = create_interview_question(owner, monkeypatch)
+    answer = submit_answer(owner, interview_id, question_id).json()["data"]
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: fake_gemini_full())
+    client.post(f"/api/v1/interviews/{interview_id}/answers/{answer['answer_id']}/evaluate", headers=owner)
+    assert client.post(f"/api/v1/interviews/{interview_id}/complete", headers=other).status_code == 404
+
+
+def test_question_target_is_selectable_and_capped_at_six():
+    owner = premium_token_for("target-cap@example.com", "Target Cap")
+    application_id = create_application(owner)
+
+    within_range = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": application_id, "personality": "technical", "difficulty": "medium", "question_target": 3},
+    )
+    assert within_range.status_code == 200
+    assert within_range.json()["data"]["question_target"] == 3
+
+    too_many = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": application_id, "personality": "technical", "difficulty": "medium", "question_target": 7},
+    )
+    assert too_many.status_code == 422
+
+
+def test_generate_question_rejected_once_target_reached(monkeypatch):
+    owner = premium_token_for("target-reached@example.com", "Target Reached")
+    application_id = create_application(owner)
+    interview_id = client.post(
+        "/api/v1/interviews", headers=owner,
+        json={"application_id": application_id, "personality": "technical", "difficulty": "medium", "question_target": 1},
+    ).json()["data"]["interview_id"]
+
+    class FakeGemini:
+        def generate_interview_question(self, **_context):
+            return GeneratedQuestion(
+                question="How would you design a rate limiter?", topic="Systems", question_type="technical",
+                difficulty=DifficultyEnum.medium, expected_skills=["Systems"], reason="Tests the question cap.",
+            )
+
+    monkeypatch.setattr("app.services.interview_questions.get_gemini_service", lambda: FakeGemini())
+    first = client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner)
+    assert first.status_code == 200
+    second = client.post(f"/api/v1/interviews/{interview_id}/questions", headers=owner)
+    assert second.status_code == 409
+
+
+def test_resubmitting_an_answer_updates_in_place_and_does_not_inflate_answered_count(monkeypatch):
+    owner = premium_token_for("resubmit-progress@example.com", "Resubmit Progress")
+    interview_id, question_id = create_interview_question(owner, monkeypatch)
+
+    first_answer = submit_answer(owner, interview_id, question_id, answer_text="First draft answer.").json()["data"]
+    monkeypatch.setattr("app.services.interview_evaluation.get_gemini_service", lambda: fake_evaluator(overall=40))
+    client.post(f"/api/v1/interviews/{interview_id}/answers/{first_answer['answer_id']}/evaluate", headers=owner)
+
+    second_answer = submit_answer(owner, interview_id, question_id, answer_text="Revised, more detailed answer.").json()["data"]
+    assert second_answer["answer_id"] == first_answer["answer_id"]
+
+    full = client.get(f"/api/v1/interviews/{interview_id}/full", headers=owner).json()["data"]
+    assert len(full["items"]) == 1
+    assert full["items"][0]["answer"]["answer_text"] == "Revised, more detailed answer."
+    # The stale evaluation from the first draft must not survive the resubmission.
+    assert full["items"][0]["evaluation"] is None
+
+    application_id = client.get(f"/api/v1/interviews/{interview_id}", headers=owner).json()["data"]["application_id"]
+    listed = client.get("/api/v1/interviews", headers=owner, params={"application_id": application_id}).json()["data"]
+    item = next(i for i in listed["items"] if i["interview_id"] == interview_id)
+    assert item["question_count"] == 1
+    assert item["answered_count"] == 0
+
+
+def test_delete_interview_removes_it_and_is_owner_scoped(monkeypatch):
+    owner = premium_token_for("delete-owner@example.com", "Delete Owner")
+    other = premium_token_for("delete-other@example.com", "Delete Other")
+    interview_id, _ = create_interview_question(owner, monkeypatch)
+
+    assert client.delete(f"/api/v1/interviews/{interview_id}", headers=other).status_code == 404
+    assert client.delete(f"/api/v1/interviews/{interview_id}", headers=owner).status_code == 200
+    assert client.get(f"/api/v1/interviews/{interview_id}", headers=owner).status_code == 404

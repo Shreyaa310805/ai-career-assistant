@@ -4,16 +4,52 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.models.application import Application
+from app.models.interview import InterviewAnswer, InterviewAnswerEvaluation, InterviewQuestion
 from app.models.resume import AtsReport, Resume
 from app.schemas.interview import DifficultyEnum, GeneratedQuestion
-from app.services.resumes.gemini_service import get_gemini_service
+from app.services.resumes.gemini_service import AdaptationContext, get_gemini_service
+
+# From question 3 onward, this session's own running performance is factored
+# into the next question's difficulty/topic. Questions 1-2 stay at the fixed
+# baseline chosen at setup so there is at least one evaluated data point to
+# adapt from.
+_ADAPTATION_STARTS_AT_QUESTION = 3
+
+
+def build_adaptation_context(interview_id: UUID, question_number: int, db: Session) -> AdaptationContext | None:
+    """Build adaptive context from this interview's own answered questions only."""
+    if question_number < _ADAPTATION_STARTS_AT_QUESTION:
+        return None
+    rows = db.execute(
+        select(InterviewAnswerEvaluation)
+        .join(InterviewAnswer, InterviewAnswerEvaluation.answer_id == InterviewAnswer.id)
+        .join(InterviewQuestion, InterviewAnswer.question_id == InterviewQuestion.id)
+        .where(InterviewQuestion.interview_id == interview_id)
+    ).scalars().all()
+    if not rows:
+        return None
+    average = sum(row.overall_score for row in rows) / len(rows)
+    weaknesses = list(dict.fromkeys(w for row in rows for w in row.weaknesses))[:6]
+    missing_points = list(dict.fromkeys(m for row in rows for m in row.missing_points))[:6]
+    if average >= 75:
+        suggested_difficulty = DifficultyEnum.hard
+    elif average >= 45:
+        suggested_difficulty = DifficultyEnum.medium
+    else:
+        suggested_difficulty = DifficultyEnum.easy
+    return AdaptationContext(
+        average_score=average, recent_weaknesses=weaknesses,
+        recent_missing_points=missing_points, suggested_difficulty=suggested_difficulty,
+    )
 
 
 async def generate_question_for_application(
     *, application: Application, personality: str, difficulty: str,
     question_number: int, previous_questions: list[str], resume_db: AsyncSession,
+    adaptation: AdaptationContext | None = None,
 ) -> GeneratedQuestion:
     """Build a privacy-safe context from the latest best resume/ATS report."""
     resume_skills: list[str] = []
@@ -55,4 +91,5 @@ async def generate_question_for_application(
         question_number=question_number,
         previous_questions=previous_questions,
         resume_evidence=resume_evidence,
+        adaptation=adaptation,
     )
