@@ -1,11 +1,15 @@
-from uuid import UUID
+from uuid import UUID, uuid4
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DbSession, PremiumUser
+from app.api.deps import CurrentUser, DbSession, PremiumUser
+from app.models.user import Plan
+from app.models.subscription import InterviewUsage
+from app.services.entitlements import lock_user, consume_interview, check_question_access, started_interview
 from app.models.application import Application
 from app.db.resume_session import get_db as get_resume_db
 from app.models.interview import Interview, InterviewAnswer, InterviewAnswerEvaluation, InterviewQuestion
@@ -67,7 +71,6 @@ def _owned_application(application_id: UUID, user_id: UUID, db: DbSession) -> Ap
         select(Application).where(
             Application.id == application_id,
             Application.user_id == user_id,
-            Application.is_scratch.is_(False),
         )
     )
     if not application:
@@ -76,29 +79,46 @@ def _owned_application(application_id: UUID, user_id: UUID, db: DbSession) -> Ap
 
 
 @router.post("", response_model=APIResponse)
-def create_interview(payload: InterviewCreateRequest, db: DbSession, current_user: PremiumUser):
-    _owned_application(payload.application_id, current_user.id, db)
+def create_interview(payload: InterviewCreateRequest, db: DbSession, current_user: CurrentUser,
+                     idempotency_key: Annotated[UUID | None, Header()] = None):
+    user = lock_user(db, current_user.id)
+    existing = started_interview(db, user.id, idempotency_key)
+    if existing:
+        if existing.application_id != payload.application_id or existing.personality != payload.personality.value or existing.difficulty != payload.difficulty.value:
+            raise HTTPException(409, "Idempotency key was used with different interview options")
+        return APIResponse(success=True, data=_interview_data(existing), error=None)
+    is_trial = user.plan == Plan.FREE
+    if is_trial:
+        application = db.get(Application, payload.application_id)
+        if not application or application.user_id != user.id or not application.is_scratch:
+            raise HTTPException(403, "Start your free trial from Interview practice")
+    else:
+        application = _owned_application(payload.application_id, user.id, db)
+    consume_interview(db, user, is_trial)
     interview = Interview(
-        application_id=payload.application_id,
+        application_id=application.id,
+        is_trial=is_trial,
         personality=payload.personality.value,
         difficulty=payload.difficulty.value,
         status="created",
     )
     db.add(interview)
+    db.flush()
+    db.add(InterviewUsage(interview_id=interview.id, user_id=user.id,
+        request_id=idempotency_key or uuid4(), credits_charged=0 if is_trial else 1))
     db.commit()
     db.refresh(interview)
     return APIResponse(success=True, data=_interview_data(interview), error=None)
 
 
 @router.get("/{interview_id}", response_model=APIResponse)
-def get_interview(interview_id: UUID, db: DbSession, current_user: PremiumUser):
+def get_interview(interview_id: UUID, db: DbSession, current_user: CurrentUser):
     interview = db.scalar(
         select(Interview)
         .join(Application, Interview.application_id == Application.id)
         .where(
             Interview.id == interview_id,
             Application.user_id == current_user.id,
-            Application.is_scratch.is_(False),
         )
     )
     if not interview:
@@ -109,7 +129,7 @@ def get_interview(interview_id: UUID, db: DbSession, current_user: PremiumUser):
 def _owned_interview(interview_id: UUID, user_id: UUID, db: DbSession) -> Interview:
     interview = db.scalar(
         select(Interview).join(Application, Interview.application_id == Application.id).where(
-            Interview.id == interview_id, Application.user_id == user_id, Application.is_scratch.is_(False)
+            Interview.id == interview_id, Application.user_id == user_id
         )
     )
     if not interview:
@@ -126,16 +146,33 @@ def _answer_for_interview(answer_id: UUID, interview_id: UUID, db: DbSession) ->
     return answer
 
 
+@router.get("/{interview_id}/report")
+def interview_report(interview_id: UUID, db: DbSession, current_user: PremiumUser):
+    interview = _owned_interview(interview_id, current_user.id, db)
+    if interview.is_trial:
+        raise HTTPException(403, "Trial sessions do not include a final report. Start a Pro interview.")
+    evaluations = db.scalars(select(InterviewAnswerEvaluation).join(InterviewAnswer).where(
+        InterviewAnswer.interview_id == interview.id
+    ).order_by(InterviewAnswer.created_at)).all()
+    return {"success": True, "data": {
+        "interview_id": interview.id, "evaluated_answers": len(evaluations),
+        "overall_score": round(sum(e.overall_score for e in evaluations) / len(evaluations), 1) if evaluations else None,
+        "evaluations": [_evaluation_data(e) for e in evaluations],
+    }, "error": None}
+
+
 @router.post("/{interview_id}/questions", response_model=APIResponse)
 async def generate_question(
-    interview_id: UUID, payload: GenerateQuestionRequest, db: DbSession, current_user: PremiumUser,
+    interview_id: UUID, payload: GenerateQuestionRequest, db: DbSession, current_user: CurrentUser,
     resume_db: AsyncSession = Depends(get_resume_db),
 ):
     interview = _owned_interview(interview_id, current_user.id, db)
+    db.refresh(interview, with_for_update=True)
     application = _owned_application(interview.application_id, current_user.id, db)
     question_number = (db.scalar(select(func.max(InterviewQuestion.question_number)).where(
         InterviewQuestion.interview_id == interview.id
     )) or 0) + 1
+    check_question_access(interview, current_user, question_number)
     current_interview_questions = db.scalars(select(InterviewQuestion.question).where(
         InterviewQuestion.interview_id == interview.id
     ).order_by(InterviewQuestion.question_number)).all()
@@ -168,7 +205,7 @@ async def generate_question(
 
 
 @router.get("/{interview_id}/questions", response_model=APIResponse)
-def list_questions(interview_id: UUID, db: DbSession, current_user: PremiumUser):
+def list_questions(interview_id: UUID, db: DbSession, current_user: CurrentUser):
     interview = _owned_interview(interview_id, current_user.id, db)
     questions = db.scalars(select(InterviewQuestion).where(
         InterviewQuestion.interview_id == interview.id
@@ -180,9 +217,10 @@ def list_questions(interview_id: UUID, db: DbSession, current_user: PremiumUser)
 
 @router.post("/{interview_id}/answers", response_model=APIResponse)
 def submit_answer(
-    interview_id: UUID, payload: AnswerSubmitRequest, db: DbSession, current_user: PremiumUser,
+    interview_id: UUID, payload: AnswerSubmitRequest, db: DbSession, current_user: CurrentUser,
 ):
-    _owned_interview(interview_id, current_user.id, db)
+    interview = _owned_interview(interview_id, current_user.id, db)
+    check_question_access(interview, current_user, 0)
     question = db.scalar(select(InterviewQuestion).where(
         InterviewQuestion.id == payload.question_id, InterviewQuestion.interview_id == interview_id
     ))
@@ -201,10 +239,11 @@ def submit_answer(
 
 @router.post("/{interview_id}/answers/{answer_id}/evaluate", response_model=APIResponse)
 async def evaluate_answer(
-    interview_id: UUID, answer_id: UUID, db: DbSession, current_user: PremiumUser,
+    interview_id: UUID, answer_id: UUID, db: DbSession, current_user: CurrentUser,
     resume_db: AsyncSession = Depends(get_resume_db),
 ):
     interview = _owned_interview(interview_id, current_user.id, db)
+    check_question_access(interview, current_user, 0)
     application = _owned_application(interview.application_id, current_user.id, db)
     answer = _answer_for_interview(answer_id, interview.id, db)
     question = db.scalar(select(InterviewQuestion).where(

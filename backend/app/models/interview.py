@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -15,6 +15,7 @@ class Interview(Base):
         Uuid(as_uuid=True), ForeignKey("applications.id", ondelete="CASCADE"), nullable=False, index=True
     )
     personality: Mapped[str] = mapped_column(String(30), nullable=False)
+    is_trial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     difficulty: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="created", server_default="created")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

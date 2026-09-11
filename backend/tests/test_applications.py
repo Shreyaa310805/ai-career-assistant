@@ -14,7 +14,12 @@ def token_for(email: str, name: str) -> dict[str, str]:
 
 def premium_token_for(email: str, name: str) -> dict[str, str]:
     headers = token_for(email, name)
-    assert client.post("/api/v1/billing/checkout", headers=headers, json={"plan": "PREMIUM"}).status_code == 201
+    from sqlalchemy import select
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.email == email))
+        user.plan = Plan.PREMIUM
+        user.interview_credits = 10
+        db.commit()
     return headers
 
 

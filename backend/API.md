@@ -52,15 +52,14 @@ Errors: `409` duplicate email, `401` bad credentials or invalid/revoked token.
 
 ## Billing — `/billing`
 
-Simulated provider. **No card data is accepted, transmitted or stored.**
+Razorpay TEST subscriptions replace the immediate mock upgrade. The complete billing,
+entitlement, cancellation and practice API contract is in
+[Master contract, section 20](../docs/MASTER_API_CONTRACT.md#20-person-4---payments--subscriptions--entitlements).
 
-| Method | Path | Access | Request | Response |
-| --- | --- | --- | --- | --- |
-| GET | `/billing/plan` | User | — | `200` `{plan, premium_since, price_cents, currency, provider, payments[]}` |
-| POST | `/billing/checkout` | User | `{plan: "PREMIUM"}` | `201` `{user, payment, already_premium}` |
-
-`checkout` is idempotent: calling it on a PREMIUM account returns `already_premium: true` with
-`payment: null` and records no second transaction. Buying `FREE` returns `422`.
+`GET /billing/catalog`, `GET /billing/plan`, `GET /billing/payments`,
+`POST /billing/checkout`, `POST /billing/verify`, `POST /billing/sync`,
+`POST /billing/cancel`, and signed `POST /billing/webhook` are implemented.
+Checkout creates an unpaid subscription; only verified captured payment unlocks Pro.
 
 ## Quick scan — `/quick-scan`
 

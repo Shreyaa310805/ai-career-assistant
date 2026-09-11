@@ -11,8 +11,9 @@ and a dedicated workspace per role: resume versions, skill gap, roadmap, what-if
 - Signup, login, JWT bearer authentication, logout/revocation
 - **Free tier** — resume upload, job-description upload or paste, ATS score with its six named
   sub-components, skill matching and improvement suggestions, with no application required
-- **Simulated upgrade to Premium** — a mock checkout that flips the account server-side. No card data is
-  requested, transmitted or stored
+- **Razorpay TEST Pro subscriptions** — verified monthly/yearly billing, one lifetime
+  interview trial, configurable session credits, renewal and cancellation. See
+  [payment setup and testing](docs/PAYMENTS_TESTING.md).
 - **Premium** — ownership-protected application tracker (company, role, job description, application date,
   status), a per-application workspace, and career intelligence derived from stored ATS reports
 - PDF and DOCX text extraction (TXT also accepted for job descriptions)
@@ -133,9 +134,9 @@ run `npm run build` before review. Keep migrations, API contracts and frontend t
 
 Known limitations:
 
-- Payments are simulated. `backend/app/api/routes/billing.py` records a mock transaction; wiring a real
-  processor means replacing that handler's body, not the route or its schema.
-- Interview preparation is not implemented.
+- Payment integration is TEST-only. Public webhook delivery and yearly checkout require their
+  optional configuration; local provider-backed refresh works without webhooks.
+- Voice/confidence interview analysis remains outside this payment integration.
 - Years of experience are estimated by regex over phrases like "5+ years", so a resume that never states a
   total will score 0 on the experience component of the match.
 - Alembic migrations target PostgreSQL (they use `now()` and `ALTER TYPE`) and will not run on SQLite.

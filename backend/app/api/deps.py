@@ -1,5 +1,6 @@
 from typing import Annotated
 from uuid import UUID
+from app.services.entitlements import expire_access
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -30,6 +31,7 @@ def get_current_user(db: DbSession, credentials: Annotated[HTTPAuthorizationCred
     user = db.get(User, user_id)
     if not user:
         raise unauthorized
+    expire_access(db, user)
     return user
 
 

@@ -15,12 +15,10 @@ class PaymentStatus(str, enum.Enum):
 
 
 class Payment(Base):
-    """A record of a plan purchase.
+    """Audited purchases. New Razorpay records are written only after verification.
 
-    The current provider is `mock`: checkout is simulated and no card data is
-    ever accepted, transmitted or stored. The table exists so that upgrading
-    leaves an auditable trail and so a real processor can be swapped in behind
-    the same route without a schema change.
+    Historical mock purchases remain distinguishable by their provider value.
+    Card details and provider secrets are never stored in this table.
     """
 
     __tablename__ = "payments"

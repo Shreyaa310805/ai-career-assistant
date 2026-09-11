@@ -79,9 +79,10 @@ export type InterviewEvaluationResponse = {
   error: { code: string; message: string; details?: unknown } | null;
 };
 
-export function createInterview(applicationId: string, personality: InterviewPersonality, difficulty: InterviewDifficulty) {
-  return authedRequest<InterviewResponse>("/interviews", {
+export function createInterview(applicationId: string | undefined, personality: InterviewPersonality, difficulty: InterviewDifficulty, requestId?: string) {
+  return authedRequest<InterviewResponse>(applicationId ? "/interviews" : "/practice/interviews", {
     method: "POST",
+    headers: requestId ? { "Idempotency-Key": requestId } : {},
     body: JSON.stringify({ application_id: applicationId, personality, difficulty }),
   });
 }

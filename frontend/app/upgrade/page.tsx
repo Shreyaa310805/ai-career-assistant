@@ -1,141 +1,49 @@
 "use client";
-
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
-import { Alert, Badge, Button, Card, LinkButton, SectionHeading } from "@/components/ui";
-import { checkout, formatPrice, getPlan, type PlanDetails } from "@/lib/billing";
-
-const PREMIUM_FEATURES = [
-  "Unlimited tracked applications with company, role, dates and status",
-  "A dedicated workspace per role",
-  "Resume versions, comparison and best-version selection",
-  "Skill gap analysis with ranked priorities",
-  "Career roadmap and curated learning resources",
-  "What-if simulation of your match score",
-];
+import { Alert, Button, Card, LinkButton, SectionHeading } from "@/components/ui";
+import { cancelSubscription, checkout, formatPrice, getCatalog, getPlan, syncPlan, type Catalog, type PlanDetails } from "@/lib/billing";
 
 export default function UpgradePage() {
-  const router = useRouter();
   const [plan, setPlan] = useState<PlanDetails | null>(null);
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    getPlan().then(setPlan).catch(() => setPlan(null));
-  }, []);
-
-  async function pay() {
-    setBusy(true);
-    setError("");
-    try {
-      const result = await checkout();
-      setDone(true);
-      setPlan((current) => (current ? { ...current, plan: result.user.plan } : current));
-      // Let the confirmation register before moving on.
-      setTimeout(() => router.push("/applications"), 1400);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to complete the upgrade.");
-    } finally {
-      setBusy(false);
-    }
+  async function run(action: () => Promise<PlanDetails>) {
+    setBusy(true); setError("");
+    try { setPlan(await action()); window.dispatchEvent(new Event("plan-changed")); }
+    catch (e) { setError(e instanceof Error ? e.message : "Unable to update your plan"); }
+    finally { setBusy(false); }
   }
-
-  const isPremium = plan?.plan === "PREMIUM";
-  const price = plan ? formatPrice(plan.price_cents, plan.currency) : "$19";
-
-  return (
-    <AppShell>
-      <main className="mx-auto max-w-4xl px-5 py-8 sm:px-8">
-        <div className="mb-6">
-          <SectionHeading
-            eyebrow="Plans"
-            title="Upgrade to Premium"
-            description="Unlock the application tracker and every role-specific analysis tool."
-          />
-        </div>
-
-        <Alert tone="info">
-          <b>Simulated checkout.</b> This build has no payment processor connected. Selecting
-          &ldquo;Pay&rdquo; records a mock transaction and switches your account to Premium immediately.
-          No card details are requested, sent or stored.
-        </Alert>
-
-        <div className="mt-6 grid gap-6 md:grid-cols-[1.15fr_1fr]">
-          <Card className="p-7">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-semibold">Premium</h2>
-                <p className="mt-1 text-sm text-slate-500">One-time upgrade for this account.</p>
-              </div>
-              <Badge tone={isPremium ? "success" : "brand"}>{isPremium ? "Active" : "Recommended"}</Badge>
-            </div>
-
-            <p className="mt-6 text-4xl font-bold tracking-tight">
-              {price}
-              <span className="text-base font-medium text-slate-500"> one-time</span>
-            </p>
-
-            <ul className="mt-6 space-y-2.5">
-              {PREMIUM_FEATURES.map((feature) => (
-                <li key={feature} className="flex gap-2.5 text-sm text-slate-700">
-                  <span aria-hidden className="mt-0.5 text-emerald-600">✓</span>
-                  {feature}
-                </li>
-              ))}
-            </ul>
-          </Card>
-
-          <Card className="h-fit p-7">
-            {isPremium || done ? (
-              <div className="text-center">
-                <div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-50 text-xl text-emerald-600">
-                  ✓
-                </div>
-                <h2 className="mt-4 text-lg font-semibold">You are on Premium</h2>
-                <p className="mt-2 text-sm text-slate-500">
-                  The application tracker and every workspace tool are unlocked.
-                </p>
-                <LinkButton href="/applications" className="mt-6 w-full">
-                  Go to applications
-                </LinkButton>
-              </div>
-            ) : (
-              <>
-                <h2 className="text-lg font-semibold">Checkout</h2>
-                <dl className="mt-5 space-y-2.5 text-sm">
-                  <div className="flex justify-between">
-                    <dt className="text-slate-500">Premium plan</dt>
-                    <dd className="font-medium tabular-nums">{price}</dd>
-                  </div>
-                  <div className="flex justify-between">
-                    <dt className="text-slate-500">Payment method</dt>
-                    <dd className="font-medium">Simulated</dd>
-                  </div>
-                  <div className="flex justify-between border-t border-line pt-2.5">
-                    <dt className="font-semibold">Total</dt>
-                    <dd className="font-semibold tabular-nums">{price}</dd>
-                  </div>
-                </dl>
-
-                {error ? (
-                  <div className="mt-5">
-                    <Alert>{error}</Alert>
-                  </div>
-                ) : null}
-
-                <Button size="lg" onClick={pay} disabled={busy} className="mt-6 w-full">
-                  {busy ? "Processing…" : `Pay ${price} — simulated`}
-                </Button>
-                <p className="mt-3 text-center text-xs text-slate-500">
-                  No card is required and none is collected.
-                </p>
-              </>
-            )}
-          </Card>
-        </div>
-      </main>
-    </AppShell>
-  );
+  useEffect(() => { getPlan().then(setPlan).catch(e => setError(e.message)); }, []);
+  useEffect(() => { getCatalog().then(setCatalog).catch(e => setError(e.message)); }, []);
+  return <AppShell><main className="mx-auto max-w-3xl space-y-6 px-5 py-8">
+    <SectionHeading eyebrow="Plans" title="SkillSync Pro" description="Interview sessions, premium reports, and the full career toolkit." />
+    <Alert tone="info">Razorpay TEST checkout. Use test payment details; no real money is charged. The monthly price is shown in checkout.</Alert>
+    {error && <Alert>{error}</Alert>}
+    <Card className="space-y-5 p-7">
+      <h2 className="text-xl font-semibold">{plan?.plan === "PREMIUM" ? "Pro activated" : "Upgrade to Pro"}</h2>
+      <p>One credit starts one interview. Questions and answers within that session use no additional credits. Each successful renewal resets your allowance for the billing period.</p>
+      {plan?.plan === "PREMIUM" ? <>
+        <p className="text-3xl font-bold">{plan.credits}/{plan.credit_limit} credits</p>
+        {plan.pro_until && <p>Access through {new Date(plan.pro_until).toLocaleString()}.</p>}
+        <LinkButton href="/interview">Start interview</LinkButton>
+        {plan.cancel_at_cycle_end ? <Alert tone="info">Renewal cancelled. Pro stays available until the end of your paid period.</Alert> : plan.subscription_id &&
+          <Button disabled={busy} variant="secondary" onClick={() => run(cancelSubscription)}>Cancel renewal</Button>}
+      </> : <>
+        <p>Free includes one lifetime interview trial with up to {plan?.trial_question_limit ?? catalog?.trial_question_limit ?? "a limited number of"} questions. Trial sessions have no final report.</p>
+        {plan && !plan.configured && <Alert>Razorpay TEST settings are not configured on the backend yet.</Alert>}
+        {catalog?.plans.map(option => <div key={option.interval} className="rounded-lg border border-line p-4 space-y-3">
+          <p className="font-semibold">Pro {option.interval} — {option.credits} interview credits per billing period</p>
+          {option.amount !== null && option.currency && <p>{formatPrice(option.amount, option.currency)} / {option.interval === "monthly" ? "month" : "year"}</p>}
+          <Button disabled={busy || !option.available} onClick={() => run(() => checkout(option.interval))}>
+            {option.available ? `Upgrade ${option.interval} — TEST checkout` : `${option.interval === "yearly" ? "Yearly" : "Monthly"} plan unavailable`}
+          </Button>
+        </div>)}
+        {plan?.subscription_id && <Button variant="secondary" disabled={busy} onClick={() => run(cancelSubscription)}>Cancel unfinished checkout</Button>}
+        <LinkButton href="/interview" variant="secondary">Interview practice</LinkButton>
+      </>}
+      <Button variant="ghost" disabled={busy} onClick={() => run(syncPlan)}>Refresh plan</Button>
+    </Card>
+  </main></AppShell>;
 }

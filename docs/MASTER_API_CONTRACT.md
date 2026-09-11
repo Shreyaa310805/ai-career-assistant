@@ -798,24 +798,27 @@ The `application_id` generated here is the **single application ID used by all m
 
 # 9. Feature Access / Premium Rules
 
-### FREE
-- ATS Score
+Product values below are **provisional and centrally configurable**. The UI calls the
+billing catalog/entitlement APIs; it must not hard-code prices or allowances.
+The database/API enum remains `FREE` / `PREMIUM`; the product label for PREMIUM is **Pro**.
 
-### PREMIUM
-- Resume ↔ JD Matching
-- Explainable Screening Report
-- Resume Versioning
-- Version Comparison
-- AI Mock Interview
-- Interview Evaluation / Reports
-- Skill Gap Analysis
-- What-If Simulation
-- Learning Recommendations
-- Career Roadmap
+| Feature | Free | Pro |
+| --- | --- | --- |
+| Quick-scan ATS, resume/JD match, basic breakdown and improvement insights | Yes | Yes |
+| Lifetime interview trial | One session, up to configured question limit (default 3) | Existing trial may be resumed |
+| Trial final report | Never available, including after upgrade | Never available |
+| Paid interview sessions | No | One credit at session creation; subsequent questions/answers do not charge again |
+| Paid-session report | No | Yes, while Pro access is active |
+| Application tracker, resume versions/comparison, career intelligence | No | Yes |
 
-Premium-only features must return HTTP `403` for FREE users.
-
-Frontend may show a locked/premium prompt, but backend enforcement is mandatory.
+Monthly default: 10 credits per paid monthly period. Yearly default: 120 credits
+per paid yearly period, if a yearly provider plan is configured. These are configuration
+defaults, not fixed product commitments. Yearly credits are granted for the annual period;
+there is no separate monthly drip for annual billing in this implementation.
+Renewal resets the allowance (no rollover). Cancellation at period end preserves access
+until the paid expiry. Expired access is enforced on authenticated requests even without webhooks.
+Backend guards return HTTP `403` for disallowed features or exhausted allowances.
+See section 20 for the complete Person 4 contract. Person 1, 2, and 3 contracts remain unchanged.
 
 ---
 
@@ -1176,3 +1179,188 @@ Integration happens once module contracts and implementations are stable.
 10. **Use feature branches; do not develop directly on `main`.**
 11. **Integrate modules through the shared application workspace.**
 12. **If a contract change is necessary, coordinate with the module owner first.**
+
+
+# 20. Person 4 - Payments / Subscriptions / Entitlements
+
+## 20.1 Configuration and terminology
+
+Base path: `/api/v1`. JWT bearer authentication is required except for the signed webhook.
+Razorpay is **TEST-only**: the backend rejects keys that do not start with `rzp_test_`.
+No endpoint accepts client-asserted amounts, credits, payment status, or Pro activation.
+No payment credentials or card data are stored by the application.
+
+Configuration is loaded from the root `.env` and then optional `backend/.env`; environment
+variables take precedence. Docker Compose already passes the root `.env` to the backend.
+Do not put secrets in frontend environment variables or source control.
+
+| Variable | Meaning / provisional default |
+| --- | --- |
+| `RAZORPAY_KEY_ID` | TEST public checkout key |
+| `RAZORPAY_KEY_SECRET` | Backend-only API/signature secret |
+| `RAZORPAY_PLAN_ID` | Backward-compatible monthly provider plan fallback |
+| `RAZORPAY_MONTHLY_PLAN_ID` | Preferred monthly plan ID; overrides fallback |
+| `RAZORPAY_YEARLY_PLAN_ID` | Optional yearly plan ID; no invented fallback |
+| `RAZORPAY_WEBHOOK_SECRET` | Independent backend-only webhook secret; optional locally |
+| `PRO_MONTHLY_INTERVIEW_CREDITS` | 10, positive integer |
+| `PRO_YEARLY_INTERVIEW_CREDITS` | 120, positive integer |
+| `FREE_TRIAL_QUESTION_LIMIT` | 3, positive integer |
+
+Prices/currency are fetched from the configured Razorpay Plan, the authoritative price
+configuration. A plan must have interval `1` and period `monthly` or `yearly` as selected.
+An absent yearly ID yields an unavailable catalog option and `503` on yearly checkout.
+An absent webhook secret yields `503` on the webhook; it never disables signature validation.
+Allowance changes apply at the next verified paid cycle, with the active allowance snapshotted
+on the subscription. Trial limit changes apply to trial question generation.
+
+## 20.2 Endpoint overview
+
+| Method | Path | Access | Purpose |
+| --- | --- | --- | --- |
+| GET | `/billing/catalog` | User | Configured plan prices, intervals, availability, credit allowances |
+| GET | `/billing/plan` | User | Current stored entitlements and subscription status |
+| GET | `/billing/payments` | User | Up to 100 own audited purchases, newest first |
+| POST | `/billing/checkout` | User | Create/reuse an unpaid Razorpay subscription; never activates Pro |
+| POST | `/billing/verify` | User | Validate Checkout signature and verify provider payment/invoice |
+| POST | `/billing/sync` | User | Fetch own subscription and paid invoices for callback/webhook recovery |
+| POST | `/billing/cancel` | User | Cancel renewal; unpaid checkout cancellation is immediate |
+| POST | `/billing/webhook` | Signed provider | Process subscription state/charges after HMAC verification |
+| POST | `/practice/interviews` | User | Person 4 practice entry point using canonical application context |
+| GET | `/practice/interviews` | User | Up to 100 owned sessions and usage costs, newest first |
+
+Existing Person 2 interview request/response payloads remain unchanged. Person 4 adds
+entitlement enforcement to those routes and supports the optional `Idempotency-Key` UUID
+header on interview creation. The required `application_id` on `POST /interviews` is preserved.
+The practice entry point creates a private scratch Application in the canonical Applications
+table; it does not add an application model or expose scratch entries in the tracker.
+
+## 20.3 Catalog and entitlements
+
+`GET /billing/catalog`:
+```json
+{
+  "plans": [
+    {"interval": "monthly", "available": true, "credits": 10, "amount": 19900, "currency": "INR"},
+    {"interval": "yearly", "available": false, "credits": 120, "amount": null, "currency": null}
+  ],
+  "trial_question_limit": 3
+}
+```
+Amounts and allowances above are examples. `amount` uses currency minor units.
+
+`GET /billing/plan`, and successful verify/sync/cancel, return:
+```json
+{
+  "plan": "PREMIUM", "credits": 9, "credit_limit": 10,
+  "trial_available": false, "trial_question_limit": 3, "interval": "monthly",
+  "pro_until": "2026-10-10T12:00:00Z",
+  "subscription_id": "sub_example", "subscription_status": "active",
+  "cancel_at_cycle_end": false, "webhook_configured": false,
+  "provider": "razorpay", "test_mode": true, "configured": true
+}
+```
+`pro_until`, `subscription_id`, and `subscription_status` may be null. `configured` indicates
+TEST API credentials, not webhook readiness. Catalog availability also requires a provider plan.
+The payment-history response retains the purchase fields `id`, `plan`, `amount_cents`, `currency`,
+`provider`, `status`, `created_at`; `amount_cents` is the historical field name for minor units.
+
+## 20.4 Checkout and verification
+
+`POST /billing/checkout` request: `{"plan":"PREMIUM","interval":"monthly"}`.
+Both fields have the shown defaults. `interval` also accepts `yearly`.
+`201` response: `{already_premium:false,key_id,subscription_id,amount,currency}`.
+An already-Pro account receives `{already_premium:true}` and no provider purchase is made.
+Repeated requests reuse the open subscription. Switching intervals while another subscription
+is open returns `409`; cancel the unfinished subscription first. Active plan changes/proration
+are not implemented.
+
+Pass the returned public key and `subscription_id` to Razorpay Standard Checkout.
+Post its callback unchanged to `/billing/verify`:
+```json
+{
+  "razorpay_subscription_id": "sub_example",
+  "razorpay_payment_id": "pay_example",
+  "razorpay_signature": "64-character hexadecimal signature"
+}
+```
+The server verifies HMAC-SHA256 over `payment_id|stored_subscription_id`, using the API secret,
+then fetches the subscription, captured payment, and paid invoice. Ownership, purchased plan,
+invoice subscription, and invoice payment must agree. Mere mandate authorization is insufficient.
+A verified paid period activates Pro and grants its configured allowance. `409` means payment
+capture/paid-period confirmation is still pending. Refresh via `/billing/sync` after capture.
+
+`POST /billing/sync` accepts no payload and never trusts browser payment claims. It retrieves
+provider state and paid invoices using backend API credentials. This supports local recovery
+without public webhooks, including a renewal triggered in Razorpay's TEST dashboard.
+It does not itself charge, simulate payment, or renew a subscription.
+
+## 20.5 Webhooks, renewal, and cancellation
+
+`POST /billing/webhook` requires `X-Razorpay-Signature`, validated over the exact raw body with
+the independent webhook secret. Missing configuration: `503`; bad signature/malformed event: `400`.
+Events handled: `subscription.charged`, `subscription.cancelled`, `subscription.completed`,
+`subscription.pending`, `subscription.halted`, `subscription.activated`, `subscription.authenticated`.
+Other events and subscriptions outside this application are acknowledged without mutation.
+Successful response: `{"received":true}`.
+
+State is fetched from Razorpay after signature validation to avoid trusting out-of-order event
+snapshots. Only a larger verified `paid_count` replenishes credits. Duplicate payment IDs are
+stored once; verification and webhooks share the same transition. Replayed events cannot refill
+a spent balance. Pending/halted status grants no new credits; previously paid access lasts only
+until its stored expiry. A terminal provider subscription revokes its access. Old terminal events
+cannot revoke a newer open subscription on the same account.
+
+`POST /billing/cancel` has no payload. For a paid subscription it requests provider
+`cancel_at_cycle_end=1`, records the pending cancellation, and preserves current credits/access.
+Repeated cancellation is idempotent. An unpaid created/authenticated subscription is cancelled
+immediately. Final provider cancellation, or paid-period expiry checked on requests, removes Pro
+access and remaining credits. Cancellation does not restore the lifetime trial.
+
+## 20.6 Interview usage and report guard
+
+`POST /practice/interviews` request: `{personality,difficulty}`, using existing Person 2 enum values;
+defaults are `technical` and `medium`. Response is the existing Person 2 `InterviewData` envelope.
+Pass an optional UUID `Idempotency-Key` header and reuse it only for retries of the same start.
+Reusing a key with different preferences yields `409`.
+
+A Free start atomically marks the lifetime trial used. A Pro start atomically decrements one
+credit and writes an `interview_usage` entry in the same transaction as the interview. Failure
+rolls back the debit. Trial starts cost zero credits. Existing sessions, Q2/Q3, answers, evaluations,
+report reads, and idempotent start retries do not consume additional credits.
+The configured trial limit is checked before AI generation; excess questions return `403`.
+
+`GET /practice/interviews` returns `{success:true,data:[{session:InterviewData,is_trial,
+credits_charged}],error:null}`. Legacy sessions with no usage record show zero charged credits.
+
+`GET /interviews/{id}/report` requires active Pro and a non-trial owned session. Trial reports
+remain `403` after upgrade. The current integrated report read model returns
+`{success:true,data:{interview_id,evaluated_answers,overall_score,evaluations:[]},error:null}`,
+using existing persisted rubric evaluations; empty sessions have `overall_score:null`.
+This payment integration does not modify Person 2's AI algorithms or implement the separate
+voice/confidence/completion analysis described in its full contract above.
+
+## 20.7 Persistence and errors
+
+Migrations: `0007_subscriptions` after `0006_interview_answers`, then
+`0008_subscription_allowance`.
+New user fields: `interview_credits`, `trial_used`, `pro_until`. New interview field: `is_trial`.
+New tables: `subscriptions`, `subscription_charges`, `interview_usage`.
+The subscription stores interval, paid-count high-water mark, allowance snapshot and cancellation
+intent. Unique indexes enforce one open subscription per user, one charge per provider payment,
+and one interview usage per user/request key. PostgreSQL user-row locks serialize debit and
+renewal transactions. Historical mock purchases remain auditable and legacy Pro accounts retain
+existing access with an initial configured monthly credit allowance.
+
+Errors use `{detail:"..."}`: `401` unauthenticated, `403` entitlement denied, `404` wrong owner/not
+found, `409` payment pending or idempotency/interval conflict, `422` invalid request, `503` missing
+configuration, `502` provider request failure. Raw provider errors/secrets are not echoed.
+
+## 20.8 Frontend and local verification
+
+`/upgrade`: configured prices, monthly/yearly availability, real TEST Checkout, Pro balance,
+paid expiry, cancellation and provider-backed refresh.
+`/interview`: trial/Pro practice, session resumption, credits and report gate.
+Application interview pages share the same practice component.
+
+See `docs/PAYMENTS_TESTING.md` for local testing, webhook activation and yearly setup.
+No commit or push is required by this implementation.

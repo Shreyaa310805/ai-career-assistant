@@ -3,6 +3,7 @@ from app.models.interview import Interview, InterviewAnswer, InterviewAnswerEval
 from app.models.payment import Payment, PaymentStatus
 from app.models.user import Plan, RevokedToken, User
 from app.models.resume import AtsReport, Resume
+from app.models.subscription import Subscription, SubscriptionCharge, InterviewUsage
 
 __all__ = [
     "Application",

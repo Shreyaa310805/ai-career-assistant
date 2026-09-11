@@ -85,7 +85,8 @@ async def test_latest_returns_the_most_recent_scan(free_client, sample_resume_pd
 @pytest.mark.asyncio
 async def test_scratch_application_stays_hidden_after_upgrading(free_client, sample_resume_pdf_bytes):
     await _upload(free_client, sample_resume_pdf_bytes)
-    assert (await free_client.post("/api/v1/billing/checkout", json={"plan": "PREMIUM"})).status_code == 201
+    from tests.helpers import grant_premium
+    grant_premium((await free_client.get("/api/v1/auth/me")).json()["id"])
 
     listed = await free_client.get("/api/v1/applications")
     assert listed.status_code == 200

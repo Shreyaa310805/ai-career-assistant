@@ -51,7 +51,7 @@ const FAQ = [
   },
   {
     q: "How does payment work right now?",
-    a: "Checkout is simulated for this build. Clicking upgrade flips your account to Premium immediately and records a mock transaction. No card details are requested, sent or stored.",
+    a: "Upgrade uses Razorpay TEST checkout. Pro activates after the server verifies a paid subscription. Prices and interview allowances are shown on the upgrade page.",
   },
 ];
 
@@ -144,7 +144,7 @@ export default function Home() {
               <h3 className="text-lg font-semibold">Premium</h3>
               <p className="mt-1 text-sm text-slate-500">For an active search across many companies.</p>
               <p className="mt-5 text-4xl font-bold tracking-tight">
-                $19<span className="text-base font-medium text-slate-500"> one-time</span>
+                Pro<span className="text-base font-medium text-slate-500"> subscription</span>
               </p>
               <ul className="mt-6 space-y-2.5">
                 {PREMIUM_PLAN.map((item) => (
@@ -155,7 +155,7 @@ export default function Home() {
                 ))}
               </ul>
               <LinkButton href="/signup" className="mt-7 w-full">Get started</LinkButton>
-              <p className="mt-3 text-center text-xs text-slate-500">Checkout is simulated in this build.</p>
+              <p className="mt-3 text-center text-xs text-slate-500">See current pricing on the upgrade page. Razorpay TEST payments only.</p>
             </Card>
           </div>
         </div>

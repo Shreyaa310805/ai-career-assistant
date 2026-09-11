@@ -10,6 +10,8 @@ type NavItem = { href: string; label: string; premium?: boolean };
 
 const NAV: NavItem[] = [
   { href: "/dashboard", label: "Overview" },
+  { href: "/interview", label: "Interview practice" },
+  { href: "/upgrade", label: "Plan & credits" },
   { href: "/applications", label: "Applications", premium: true },
   { href: "/career", label: "Career intelligence", premium: true },
 ];
@@ -35,6 +37,11 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   // A route change should never leave the mobile drawer covering the page.
   useEffect(() => setDrawerOpen(false), [path]);
+  useEffect(() => {
+    const refresh = () => { getCurrentUser().then(setUser).catch(() => {}); };
+    window.addEventListener("plan-changed", refresh);
+    return () => window.removeEventListener("plan-changed", refresh);
+  }, []);
 
   const logout = useCallback(async () => {
     const token = getToken();
