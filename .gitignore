@@ -9,3 +9,5 @@ __pycache__/
 backend/storage/
 frontend/.next/
 frontend/node_modules/
+
+storage/

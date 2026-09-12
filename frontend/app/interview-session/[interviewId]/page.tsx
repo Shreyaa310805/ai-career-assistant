@@ -1,8 +1,9 @@
 "use client";
 
+import { AudioAnswerRecorder } from "@/components/audio-answer-recorder";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Badge, Button, Card, Field, Skeleton, Textarea } from "@/components/ui";
 import { ScoreDial } from "@/components/interview-charts";
 import { getToken } from "@/lib/auth";
@@ -13,6 +14,7 @@ import {
   generateInterviewQuestion,
   getInterviewFull,
   submitInterviewAnswer,
+  submitInterviewAudio,
   type InterviewAnswerEvaluation,
   type InterviewDifficulty,
   type InterviewPersonality,
@@ -55,6 +57,10 @@ export default function InterviewSessionPage() {
   const [evaluation, setEvaluation] = useState<InterviewAnswerEvaluation | null>(null);
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
   const [questionStartedAt, setQuestionStartedAt] = useState<number | null>(null);
+  const [answerMode, setAnswerMode] = useState<"typed" | "audio">("audio");
+  const [audioBusy, setAudioBusy] = useState(false);
+  const [answerStatus, setAnswerStatus] = useState("");
+  const submissionLock = useRef(false);
   const [isEnding, setIsEnding] = useState(false);
 
   useEffect(() => {
@@ -124,31 +130,38 @@ export default function InterviewSessionPage() {
     }
   }
 
-  async function submitAndEvaluateAnswer() {
-    if (!interviewId || !question || !answerText.trim()) return;
+  async function submitAndEvaluateAnswer(audio?: Blob, audioDuration?: number) {
+    if (!interviewId || !question || submissionLock.current || (!audio && !answerText.trim())) return;
+    submissionLock.current = true;
     setError("");
     setIsSubmittingAnswer(true);
+    const wasAlreadyEvaluated = Boolean(evaluation);
     try {
-      const wasAlreadyEvaluated = Boolean(evaluation);
-      const durationSeconds = questionStartedAt ? Math.round((Date.now() - questionStartedAt) / 1000) : undefined;
-      const submitted = await submitInterviewAnswer(interviewId, question.question_id, answerText, durationSeconds);
-      if (!submitted.success || !submitted.data) {
-        setError(submitted.error?.message ?? "Unable to submit your answer. Please try again.");
-        return;
+      let answerId = submittedAnswerId;
+      if (audio || !answerId || answerMode === "typed") {
+        setAnswerStatus(audio ? "Uploading and transcribing..." : "Saving answer...");
+        const duration = questionStartedAt ? Math.round((Date.now() - questionStartedAt) / 1000) : undefined;
+        const submitted = audio
+          ? await submitInterviewAudio(interviewId, question.question_id, audio, audioDuration ?? 0)
+          : await submitInterviewAnswer(interviewId, question.question_id, answerText, duration);
+        if (!submitted.success || !submitted.data) throw new Error(submitted.error?.message ?? "Unable to save answer.");
+        answerId = submitted.data.answer_id;
+        setSubmittedAnswerId(answerId);
+        setAnswerText(submitted.data.answer_text);
+        setEvaluation(null);
+        if (wasAlreadyEvaluated) setAnsweredCount(count => Math.max(0, count - 1));
       }
-      const answerId = submitted.data.answer_id;
-      setSubmittedAnswerId(answerId);
-      const evaluated = await evaluateInterviewAnswer(interviewId, answerId);
-      if (!evaluated.success || !evaluated.data) {
-        setError(evaluated.error?.message ?? "Your answer was saved, but could not be evaluated yet.");
-        return;
-      }
+      setAnswerStatus("Evaluating...");
+      const evaluated = await evaluateInterviewAnswer(interviewId, answerId!);
+      if (!evaluated.success || !evaluated.data) throw new Error(evaluated.error?.message ?? "Answer saved. Please retry evaluation.");
       setEvaluation(evaluated.data);
-      if (!wasAlreadyEvaluated) setAnsweredCount((count) => count + 1);
+      setAnsweredCount(count => count + 1);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Unable to submit your answer. Please try again.");
+      setError(requestError instanceof Error ? requestError.message : "Unable to submit answer. Please retry.");
     } finally {
       setIsSubmittingAnswer(false);
+      setAnswerStatus("");
+      submissionLock.current = false;
     }
   }
 
@@ -190,10 +203,10 @@ export default function InterviewSessionPage() {
             
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" size="sm" onClick={goBack} disabled={isEnding}>
+            <Button variant="secondary" size="sm" onClick={goBack} disabled={isEnding || audioBusy || isSubmittingAnswer}>
               Go Back
             </Button>
-            <Button variant="secondary" size="sm" onClick={endSession} disabled={isEnding || isLoading}>
+            <Button variant="secondary" size="sm" onClick={endSession} disabled={isEnding || isLoading || audioBusy || isSubmittingAnswer}>
               {isEnding ? "Ending…" : "End Session"}
             </Button>
           </div>
@@ -269,21 +282,23 @@ export default function InterviewSessionPage() {
                   ) : null}
 
                   <div className="mt-6 space-y-3 border-t border-line pt-6">
-                    <Field label="Your answer" hint="Take your time — write as if you're speaking to the interviewer.">
-                      <Textarea
-                        value={answerText}
-                        onChange={(event) => {
-                          setAnswerText(event.target.value);
-                          setEvaluation(null);
-                        }}
-                        rows={7}
-                        placeholder="Write your answer here..."
-                        disabled={isSubmittingAnswer}
-                      />
-                    </Field>
-                    <Button onClick={submitAndEvaluateAnswer} disabled={isSubmittingAnswer || !answerText.trim()}>
-                      {isSubmittingAnswer ? "Evaluating…" : submittedAnswerId ? "Re-evaluate answer" : "Submit answer"}
-                    </Button>
+                    <div className="flex gap-2" aria-label="Answer mode">
+                      <Button variant={answerMode === "audio" ? "primary" : "secondary"} disabled={audioBusy || isSubmittingAnswer} onClick={() => setAnswerMode("audio")}>Audio</Button>
+                      <Button variant={answerMode === "typed" ? "primary" : "secondary"} disabled={audioBusy || isSubmittingAnswer} onClick={() => setAnswerMode("typed")}>Text</Button>
+                    </div>
+                    {answerMode === "audio" ? <>
+                      <AudioAnswerRecorder key={question.question_id} disabled={isSubmittingAnswer || isEnding || isGenerating} onBusy={setAudioBusy}
+                        onSubmit={(blob, duration) => submitAndEvaluateAnswer(blob, duration)} />
+                      {submittedAnswerId && <div><p className="font-semibold">Saved answer / transcript</p><p className="whitespace-pre-wrap">{answerText}</p></div>}
+                      {submittedAnswerId && !evaluation && <Button disabled={isSubmittingAnswer || audioBusy} onClick={() => submitAndEvaluateAnswer()}>Retry evaluation</Button>}
+                    </> : <>
+                      <Field label="Your answer">
+                        <Textarea value={answerText} onChange={event => setAnswerText(event.target.value)} rows={7}
+                          placeholder="Write your answer here..." disabled={isSubmittingAnswer} />
+                      </Field>
+                      <Button onClick={() => submitAndEvaluateAnswer()} disabled={isSubmittingAnswer || !answerText.trim()}>Submit answer</Button>
+                    </>}
+                    {answerStatus && <p role="status">{answerStatus}</p>}
                   </div>
 
                   {evaluation ? (
@@ -324,11 +339,11 @@ export default function InterviewSessionPage() {
               </p>
               <div className="flex flex-wrap gap-3">
                 {!atTarget ? (
-                  <Button onClick={generateQuestion} disabled={isGenerating}>
+                  <Button onClick={generateQuestion} disabled={isGenerating || audioBusy || isSubmittingAnswer}>
                     {isGenerating ? "Generating…" : question ? "Next Question" : "Generate First Question"}
                   </Button>
                 ) : null}
-                <Button variant="secondary" onClick={endSession} disabled={isEnding}>
+                <Button variant="secondary" onClick={endSession} disabled={isEnding || audioBusy || isSubmittingAnswer}>
                   {isEnding ? "Ending…" : "End Session"}
                 </Button>
               </div>

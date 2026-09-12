@@ -109,6 +109,8 @@ class InterviewAnswerData(BaseModel):
     answer_text: str
     source: AnswerSourceEnum
     duration_seconds: float | None = None
+    audio_mime_type: str | None = None
+    audio_size_bytes: int | None = None
     submitted_at: datetime
 
 

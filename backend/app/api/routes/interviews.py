@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,8 @@ from app.schemas.interview import (
 )
 from app.services.interview_evaluation import evaluate_answer_for_application, summarize_interview_for_application
 from app.services.interview_questions import build_adaptation_context, generate_question_for_application
+
+from app.services.interview_audio import read_audio, transcribe_audio, save_audio, remove_audio
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
@@ -50,7 +52,8 @@ def _answer_data(answer: InterviewAnswer) -> InterviewAnswerData:
     return InterviewAnswerData(
         answer_id=answer.id, interview_id=answer.interview_id, question_id=answer.question_id,
         answer_text=answer.answer_text, source=answer.source, duration_seconds=answer.duration_seconds,
-        submitted_at=answer.created_at,
+        submitted_at=answer.created_at, audio_mime_type=answer.audio_mime_type,
+        audio_size_bytes=answer.audio_size_bytes,
     )
 
 
@@ -199,6 +202,28 @@ def list_questions(interview_id: UUID, db: DbSession, current_user: PremiumUser)
     ), error=None)
 
 
+def _save_answer_row(interview_id, question_id, text, source, duration, db,
+                     audio_key=None, audio_mime=None, audio_size=None):
+    """Shared text/audio persistence. Caller holds the question row lock."""
+    answer = db.scalar(select(InterviewAnswer).where(
+        InterviewAnswer.interview_id == interview_id, InterviewAnswer.question_id == question_id,
+    ).options(selectinload(InterviewAnswer.evaluation)))
+    old_key = None
+    if answer is None:
+        answer = InterviewAnswer(interview_id=interview_id, question_id=question_id)
+        db.add(answer)
+    else:
+        old_key = answer.audio_storage_key
+        answer.evaluation = None
+    answer.answer_text = text
+    answer.source = source
+    answer.duration_seconds = duration
+    answer.audio_storage_key = audio_key
+    answer.audio_mime_type = audio_mime
+    answer.audio_size_bytes = audio_size
+    return answer, old_key
+
+
 @router.post("/{interview_id}/answers", response_model=APIResponse)
 def submit_answer(
     interview_id: UUID, payload: AnswerSubmitRequest, db: DbSession, current_user: PremiumUser,
@@ -206,29 +231,64 @@ def submit_answer(
     _owned_interview(interview_id, current_user.id, db)
     question = db.scalar(select(InterviewQuestion).where(
         InterviewQuestion.id == payload.question_id, InterviewQuestion.interview_id == interview_id
-    ))
+    ).with_for_update())
     if not question:
         # Do not disclose whether a question exists in another session.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
-    # One answer per question: a resubmission updates the existing row in
-    # place instead of inserting a new one, otherwise answered_count (which
-    # counts evaluated answers) can exceed the number of questions asked.
-    answer = db.scalar(
-        select(InterviewAnswer)
-        .where(InterviewAnswer.interview_id == interview_id, InterviewAnswer.question_id == question.id)
-        .options(selectinload(InterviewAnswer.evaluation))
+    answer, old_audio_key = _save_answer_row(
+        interview_id, question.id, payload.answer_text, payload.source.value,
+        payload.duration_seconds, db,
     )
-    if answer is None:
-        answer = InterviewAnswer(interview_id=interview_id, question_id=question.id)
-        db.add(answer)
-    else:
-        # Stale evaluation no longer matches the new answer text.
-        answer.evaluation = None
-    answer.answer_text = payload.answer_text
-    answer.source = payload.source.value
-    answer.duration_seconds = payload.duration_seconds
     db.commit()
     db.refresh(answer)
+    remove_audio(old_audio_key)
+    return APIResponse(success=True, data=_answer_data(answer), error=None)
+
+
+@router.post("/{interview_id}/questions/{question_id}/audio-answer", response_model=APIResponse)
+async def submit_audio_answer(
+    interview_id: UUID, question_id: UUID, db: DbSession, current_user: PremiumUser,
+    audio: UploadFile = File(...),
+    duration_seconds: float | None = Form(default=None, ge=0, le=600),
+):
+    interview = _owned_interview(interview_id, current_user.id, db)
+    if interview.status == "completed":
+        raise HTTPException(409, "This interview session is already completed")
+    question = db.scalar(select(InterviewQuestion).where(
+        InterviewQuestion.id == question_id, InterviewQuestion.interview_id == interview_id,
+    ))
+    if question is None:
+        raise HTTPException(404, "Question not found")
+    try:
+        data, mime = await read_audio(audio)
+    finally:
+        await audio.close()
+    # Do not hold a database transaction while waiting on the provider.
+    db.rollback()
+    transcript = await transcribe_audio(data, mime)
+    key = await save_audio(data, mime, interview_id)
+    old_key = None
+    try:
+        interview = _owned_interview(interview_id, current_user.id, db)
+        if interview.status == "completed":
+            raise HTTPException(409, "This interview session is already completed")
+        question = db.scalar(select(InterviewQuestion).where(
+            InterviewQuestion.id == question_id, InterviewQuestion.interview_id == interview_id,
+        ).with_for_update())
+        if question is None:
+            raise HTTPException(404, "Question not found")
+        answer, old_key = _save_answer_row(
+            interview_id, question_id, transcript, "voice", duration_seconds, db,
+            audio_key=key, audio_mime=mime, audio_size=len(data),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        remove_audio(key)
+        raise
+    remove_audio(old_key)
+    db.refresh(answer)
+    # Same two-step contract as typed answers: the UI calls the existing evaluator.
     return APIResponse(success=True, data=_answer_data(answer), error=None)
 
 

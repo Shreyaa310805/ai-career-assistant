@@ -217,3 +217,12 @@ export const getInterviewFull = (interviewId: string) =>
 
 export const completeInterview = (interviewId: string) =>
   authedRequest<CompleteInterviewResponse>(`/interviews/${interviewId}/complete`, { method: "POST" });
+
+export function submitInterviewAudio(interviewId: string, questionId: string, audio: Blob, duration: number) {
+  const body = new FormData();
+  body.append("audio", audio, "recording");
+  body.append("duration_seconds", String(duration));
+  return authedRequest<InterviewAnswerResponse>(`/interviews/${interviewId}/questions/${questionId}/audio-answer`, {
+    method: "POST", body,
+  });
+}

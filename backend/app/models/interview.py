@@ -62,6 +62,9 @@ class InterviewAnswer(Base):
     question_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("interview_questions.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    audio_storage_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    audio_mime_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    audio_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     answer_text: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="typed")
     duration_seconds: Mapped[float | None] = mapped_column(nullable=True)
