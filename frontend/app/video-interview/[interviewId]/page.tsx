@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Badge, Button, Skeleton, cx } from "@/components/ui";
-import { ScoreDial } from "@/components/interview-charts";
 import { ApiRequestError, getToken } from "@/lib/auth";
 import { getApplication } from "@/lib/applications";
 import {
@@ -590,13 +589,7 @@ export default function VideoInterviewPage() {
                   ) : null}
 
                   {evaluation ? (
-                    <div className="mt-4 flex flex-wrap gap-5 rounded-lg border border-brand-100 bg-brand-50/30 p-4">
-                      <div className="flex gap-3">
-                        <ScoreDial label="Score" value={evaluation.overall_score} size="sm" />
-                        <ScoreDial label="Confidence" value={evaluation.confidence_score} size="sm" />
-                      </div>
-                      <p className="min-w-[200px] flex-1 text-sm leading-6 text-slate-700">{evaluation.feedback}</p>
-                    </div>
+                    <p className="mt-4 text-sm text-slate-500">Answer saved and evaluated. Your feedback will appear in the final session summary.</p>
                   ) : null}
                 </div>
 

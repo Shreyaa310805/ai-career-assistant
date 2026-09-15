@@ -6,6 +6,7 @@ import { Alert, Badge, Card, CardHeader, LinkButton, Skeleton } from "@/componen
 import { SessionSummaryCard } from "@/components/interview-summary-card";
 import { MetricBar, ScoreDial, ScoreTrendChart, type TrendPoint } from "@/components/interview-charts";
 import { getInterviewFull, interviewSessionPath, type InterviewFullSession, type VisualAnalysis } from "@/lib/interviews";
+import { getSessionInterviewReport, type SessionInterviewReport } from "@/lib/interview-reports";
 
 export default function InterviewReviewPage() {
   const params = useParams<{ id: string; interviewId: string }>();
@@ -13,6 +14,7 @@ export default function InterviewReviewPage() {
   const interviewId = params?.interviewId;
   const [session, setSession] = useState<InterviewFullSession | null>(null);
   const [error, setError] = useState("");
+  const [report, setReport] = useState<SessionInterviewReport | null>(null);
 
   useEffect(() => {
     if (!interviewId) return;
@@ -23,6 +25,9 @@ export default function InterviewReviewPage() {
           return;
         }
         setSession(response.data);
+        if (response.data.status === "completed") {
+          getSessionInterviewReport(interviewId).then(r => setReport(r.data)).catch((e: Error) => setError(e.message));
+        }
       })
       .catch((requestError: Error) => setError(requestError.message));
   }, [interviewId]);
@@ -72,9 +77,9 @@ export default function InterviewReviewPage() {
         title="Interview results"
         description="A detailed breakdown of this practice session's scores, confidence, and feedback."
         action={
-          <LinkButton href={`/applications/${applicationId}/interview/history`} variant="secondary" size="sm">
+          <div className="flex gap-2"><LinkButton href={`/applications/${applicationId}/interview/report`} variant="secondary" size="sm">Application report</LinkButton><LinkButton href={`/applications/${applicationId}/interview/history`} variant="secondary" size="sm">
             Back to history
-          </LinkButton>
+          </LinkButton></div>
         }
       />
       <div className="space-y-8 p-6">
@@ -104,7 +109,7 @@ export default function InterviewReviewPage() {
                 summary={session.summary}
                 recommendation={session.recommendation ?? ""}
                 averageScore={session.average_score}
-                averageConfidence={session.average_confidence}
+                averageConfidence={report?.confidence_score ?? null}
               />
             ) : (
               <Alert tone="info">
@@ -115,6 +120,8 @@ export default function InterviewReviewPage() {
                 to keep answering questions.
               </Alert>
             )}
+
+            {report ? <section className="rounded-card border border-line bg-white p-5"><h3 className="font-semibold">{report.readiness}</h3><p className="mt-2 text-sm text-slate-500">{report.questions_attempted} attempted · {report.questions_evaluated} evaluated</p><div className="mt-4 grid gap-4 sm:grid-cols-2">{(["verbal_confidence", "visual_confidence"] as const).map(key => <div key={key}><p className="text-sm font-medium capitalize">{key.replaceAll('_', ' ')}: {report[key].score === null ? 'Not assessed' : `${report[key].score} / 100`}</p><p className="mt-1 text-xs text-slate-500">{report[key].basis}</p></div>)}</div></section> : null}
 
             {session.mode === "video" ? (
               <VisualAnalysisSection analysis={session.visual_analysis} completed={session.status === "completed"} />
@@ -181,7 +188,7 @@ export default function InterviewReviewPage() {
                     <div className="mt-4 grid gap-5 rounded-lg border border-brand-100 bg-brand-50/30 p-4 sm:grid-cols-[auto_1fr]">
                       <div className="flex gap-3 sm:flex-col">
                         <ScoreDial label="Score" value={evaluation.overall_score} size="sm" />
-                        <ScoreDial label="Confidence" value={evaluation.confidence_score} size="sm" />
+                        <ScoreDial label="Language confidence" value={report?.per_question_analysis.find(q => q.answer_id === answer?.answer_id)?.scores.confidence_score ?? null} size="sm" />
                       </div>
                       <div className="min-w-0">
                         <p className="text-sm leading-6 text-slate-700">{evaluation.feedback}</p>

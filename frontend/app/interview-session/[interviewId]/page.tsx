@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Badge, Button, Card, Field, Skeleton, Textarea } from "@/components/ui";
-import { ScoreDial } from "@/components/interview-charts";
 import { getToken } from "@/lib/auth";
 import { getApplication, type Application } from "@/lib/applications";
 import {
@@ -181,7 +180,7 @@ export default function InterviewSessionPage() {
         setIsEnding(false);
         return;
       }
-      router.push(`/applications/${applicationId}/interview/history`);
+      router.push(`/applications/${applicationId}/interview/${interviewId}`);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to end this session. Please try again.");
       setIsEnding(false);
@@ -307,26 +306,7 @@ export default function InterviewSessionPage() {
                   </div>
 
                   {evaluation ? (
-                    <div className="mt-6 grid gap-5 rounded-lg border border-line bg-surface-muted/60 p-5 sm:grid-cols-[auto_1fr]">
-                      <div className="flex gap-4 sm:flex-col">
-                        <ScoreDial label="Score" value={evaluation.overall_score} />
-                        <ScoreDial label="Confidence" value={evaluation.confidence_score} />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-sm leading-6 text-slate-700">{evaluation.feedback}</p>
-                        <p className="mt-2 text-xs italic text-slate-500">{evaluation.confidence_rationale}</p>
-                        {evaluation.strengths.length ? (
-                          <p className="mt-3 text-sm text-slate-700">
-                            <span className="font-semibold text-emerald-700">Strengths:</span> {evaluation.strengths.join(" ")}
-                          </p>
-                        ) : null}
-                        {evaluation.weaknesses.length ? (
-                          <p className="mt-2 text-sm text-slate-700">
-                            <span className="font-semibold text-amber-700">Improve:</span> {evaluation.weaknesses.join(" ")}
-                          </p>
-                        ) : null}
-                      </div>
-                    </div>
+                    <p className="mt-4 text-sm text-slate-500">Answer saved and evaluated. Your feedback will appear in the final session summary.</p>
                   ) : null}
                 </div>
               </Card>

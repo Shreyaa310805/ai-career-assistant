@@ -20,6 +20,7 @@ from app.schemas.interview import (
     InterviewQuestionWithAnswerData, InterviewSummaryData, VisualAnalysisData, VisualFrameData,
 )
 from app.services.interview_evaluation import evaluate_answer_for_application, summarize_interview_for_application
+from app.services.interview_reporting import session_report
 from app.services.interview_questions import build_adaptation_context, generate_question_for_application
 
 from app.services.interview_audio import read_audio, transcribe_audio, save_audio, remove_audio
@@ -532,6 +533,11 @@ async def complete_interview(interview_id: UUID, db: DbSession, current_user: Pr
     interview.recommendation = generated.recommendation.value
     db.commit()
     return APIResponse(success=True, data=CompleteInterviewData(
+        **{k: v for k, v in session_report(interview, db).items() if k in {
+            'report_id', 'application_id', 'overall_score', 'technical_score', 'communication_score',
+            'reasoning_score', 'confidence_score', 'relevance_score', 'questions_attempted', 'questions_evaluated',
+            'strengths', 'areas_to_improve', 'readiness', 'per_question_analysis', 'verbal_confidence', 'visual_confidence',
+        }},
         interview_id=interview.id, status=interview.status, completed_at=interview.completed_at,
         question_count=question_count, answered_count=answered_count,
         average_score=average_score if answered_count else None,

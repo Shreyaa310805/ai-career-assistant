@@ -481,6 +481,22 @@ Response:
 
 Returns the final interview report.
 
+## 3.9.1 Additive Application Interview Reporting
+
+### `GET /api/v1/applications/{application_id}/interview-report`
+
+PREMIUM + JWT + canonical application ownership required. Returns the standard success/data/error envelope. Dynamically aggregates only completed sessions; an empty completed-session set returns a valid report with null scores.
+
+Additive fields: application_id, company, role, generated_at, completed_session_count, total_questions_attempted, total_questions_evaluated, date_range, metrics, metric_observation_counts, verbal_confidence, visual_confidence, sessions, per_question_analysis, strengths, areas_to_improve, skill_evidence, demonstrated_skills, skills_needing_improvement, assessed_skills, recommended_focus_areas, readiness, summary.
+
+Metrics use persisted overall_score, correctness_score, relevance_score, depth_score, clarity_score, evidence_score, confidence_score. Each average excludes unmeasured/null values. Verbal confidence identifies stored transcript-language estimates for voice answers; visual confidence identifies separately measured frame composure. Missing visual observations are not_assessed, never zero-filled. Skill evidence states: demonstrated, needs_improvement, not_assessed; untested skills are never classified as missing. Original answer evaluations are unchanged.
+
+### `GET /api/v1/applications/{application_id}/interview-report/pdf`
+
+Same authorization; returns application/pdf with attachment filename `SkillSync-interview-report-{application_id}.pdf`. No recordings or storage paths are included.
+
+The existing completion implementation retains its status/timestamps/counts/averages/summary/recommendation/mode/visual_analysis fields and adds canonical report fields plus per_question_analysis, questions_evaluated, verbal_confidence and visual_confidence. Session GET /report contains only that interview. Exact nested JSON, aggregation semantics and manual tests: [INTERVIEW_REPORTING.md](INTERVIEW_REPORTING.md). Person 1 and Person 3 contracts remain frozen and unchanged.
+
 ## 3.10 Interview History
 
 ### `GET /api/v1/interviews/application/{application_id}`

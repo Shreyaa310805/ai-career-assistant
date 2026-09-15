@@ -229,6 +229,22 @@ class GeneratedInterviewSummary(BaseModel):
 
 
 class CompleteInterviewData(BaseModel):
+    report_id: UUID | None = None
+    application_id: UUID | None = None
+    overall_score: float | None = None
+    technical_score: float | None = None
+    communication_score: float | None = None
+    reasoning_score: float | None = None
+    confidence_score: float | None = None
+    relevance_score: float | None = None
+    questions_attempted: int = 0
+    questions_evaluated: int = 0
+    strengths: list[str] = Field(default_factory=list)
+    areas_to_improve: list[str] = Field(default_factory=list)
+    readiness: str = "Not assessed"
+    per_question_analysis: list[dict] = Field(default_factory=list)
+    verbal_confidence: dict = Field(default_factory=dict)
+    visual_confidence: dict = Field(default_factory=dict)
     interview_id: UUID
     status: str
     completed_at: datetime

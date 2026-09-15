@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import access, applications, auth, billing, career, interviews, quick_scan
 from app.core.config import get_settings
 from app.api.routes.resumes import router as resumes_router
+from app.api.routes.interview_reports import router as interview_reports_router
 from app.db.resume_session import init_db as init_resume_db
 from app.services.resumes.exceptions import ApiError
 from app.services.resumes.response import error_payload
@@ -37,6 +38,7 @@ app.include_router(quick_scan.router, prefix="/api/v1")
 app.include_router(resumes_router, prefix="/api/v1")
 app.include_router(career.router, prefix="/api/v1")
 app.include_router(interviews.router, prefix="/api/v1")
+app.include_router(interview_reports_router, prefix="/api/v1")
 
 
 @app.exception_handler(ApiError)

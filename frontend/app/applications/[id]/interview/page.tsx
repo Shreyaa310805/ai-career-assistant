@@ -97,9 +97,9 @@ export default function InterviewSetupPage() {
           title="Set up interview practice"
           description="Choose the practice style and level for this application."
           action={
-            <LinkButton href={`/applications/${applicationId}/interview/history`} variant="secondary" size="sm">
+            <div className="flex gap-2"><LinkButton href={`/applications/${applicationId}/interview/report`} variant="secondary" size="sm">Application report</LinkButton><LinkButton href={`/applications/${applicationId}/interview/history`} variant="secondary" size="sm">
               Past sessions
-            </LinkButton>
+            </LinkButton></div>
           }
         />
         <div className="space-y-6 p-6">
