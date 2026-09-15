@@ -3,6 +3,23 @@ import { authedRequest } from "@/lib/auth";
 export type InterviewPersonality = "technical" | "friendly" | "strict" | "behavioral" | "mixed";
 export type InterviewDifficulty = "easy" | "medium" | "hard";
 export type InterviewStatus = "created" | "in_progress" | "completed";
+export type InterviewMode = "text" | "audio" | "video";
+
+export const interviewSessionPath = (interviewId: string, mode: InterviewMode) =>
+  mode === "video" ? `/video-interview/${interviewId}` : `/interview-session/${interviewId}`;
+
+export type VisualAnalysis = {
+  visual_score: number;
+  frames_analyzed: number;
+  face_visible_rate: number;
+  eye_contact_rate: number;
+  engagement: number;
+  attentiveness: number;
+  composure: number;
+  presentation: number;
+  common_expressions: string[];
+  observations: string[];
+};
 
 export const MAX_INTERVIEW_QUESTIONS = 6;
 
@@ -14,6 +31,7 @@ export type InterviewSession = {
   status: InterviewStatus;
   question_count: number;
   question_target: number;
+  mode: InterviewMode;
   started_at: string | null;
 };
 
@@ -100,6 +118,8 @@ export type InterviewSummary = {
   completed_at: string | null;
   created_at: string;
   recommendation: string | null;
+  mode: InterviewMode;
+  visual_score: number | null;
 };
 
 export type InterviewHistory = {
@@ -135,6 +155,8 @@ export type InterviewFullSession = {
   recommendation: string | null;
   average_score: number | null;
   average_confidence: number | null;
+  mode: InterviewMode;
+  visual_analysis: VisualAnalysis | null;
   items: InterviewQuestionWithAnswer[];
 };
 
@@ -154,6 +176,8 @@ export type CompleteInterviewResult = {
   average_confidence: number | null;
   summary: string;
   recommendation: string;
+  mode: InterviewMode;
+  visual_analysis: VisualAnalysis | null;
 };
 
 export type CompleteInterviewResponse = {
@@ -167,10 +191,11 @@ export function createInterview(
   personality: InterviewPersonality,
   difficulty: InterviewDifficulty,
   questionTarget: number,
+  mode: InterviewMode,
 ) {
   return authedRequest<InterviewResponse>("/interviews", {
     method: "POST",
-    body: JSON.stringify({ application_id: applicationId, personality, difficulty, question_target: questionTarget }),
+    body: JSON.stringify({ application_id: applicationId, personality, difficulty, question_target: questionTarget, mode }),
   });
 }
 
@@ -225,4 +250,17 @@ export function submitInterviewAudio(interviewId: string, questionId: string, au
   return authedRequest<InterviewAnswerResponse>(`/interviews/${interviewId}/questions/${questionId}/audio-answer`, {
     method: "POST", body,
   });
+}
+
+export type VisualFrameResponse = {
+  success: boolean;
+  data: { frame_id: string; interview_id: string; frames_analyzed: number } | null;
+  error: { code: string; message: string; details?: unknown } | null;
+};
+
+export function submitVisualFrame(interviewId: string, frame: Blob, questionId?: string) {
+  const body = new FormData();
+  body.append("frame", frame, "frame.jpg");
+  if (questionId) body.append("question_id", questionId);
+  return authedRequest<VisualFrameResponse>(`/interviews/${interviewId}/visual-frames`, { method: "POST", body });
 }

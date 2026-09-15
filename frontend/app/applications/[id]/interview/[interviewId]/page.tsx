@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert, Badge, Card, CardHeader, LinkButton, Skeleton } from "@/components/ui";
 import { SessionSummaryCard } from "@/components/interview-summary-card";
 import { MetricBar, ScoreDial, ScoreTrendChart, type TrendPoint } from "@/components/interview-charts";
-import { getInterviewFull, type InterviewFullSession } from "@/lib/interviews";
+import { getInterviewFull, interviewSessionPath, type InterviewFullSession, type VisualAnalysis } from "@/lib/interviews";
 
 export default function InterviewReviewPage() {
   const params = useParams<{ id: string; interviewId: string }>();
@@ -90,6 +90,7 @@ export default function InterviewReviewPage() {
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone="brand">{session.personality}</Badge>
               <Badge>{session.difficulty}</Badge>
+              {session.mode !== "text" ? <Badge tone="info">{session.mode === "video" ? "Video" : "Audio"}</Badge> : null}
               <Badge tone={session.status === "completed" ? "success" : "info"}>
                 {session.status === "completed" ? "Completed" : session.status === "in_progress" ? "In progress" : "Not started"}
               </Badge>
@@ -108,12 +109,16 @@ export default function InterviewReviewPage() {
             ) : (
               <Alert tone="info">
                 This session is not marked complete yet.{" "}
-                <a className="font-semibold underline" href={`/interview-session/${interviewId}`}>
+                <a className="font-semibold underline" href={interviewSessionPath(session.interview_id, session.mode)}>
                   Continue it
                 </a>{" "}
                 to keep answering questions.
               </Alert>
             )}
+
+            {session.mode === "video" ? (
+              <VisualAnalysisSection analysis={session.visual_analysis} completed={session.status === "completed"} />
+            ) : null}
 
             {evaluatedItems.length ? (
               <div className="grid gap-6 lg:grid-cols-2">
@@ -201,5 +206,68 @@ export default function InterviewReviewPage() {
         ) : null}
       </div>
     </Card>
+  );
+}
+
+function VisualAnalysisSection({ analysis, completed }: { analysis: VisualAnalysis | null; completed: boolean }) {
+  if (!analysis) {
+    return (
+      <section className="rounded-card border border-line bg-surface-muted/60 p-5">
+        <h3 className="text-sm font-semibold text-slate-900">On-camera presence</h3>
+        <p className="mt-1 text-sm text-slate-500">
+          {completed
+            ? "No camera frames were analyzed during this session, so no visual score was generated."
+            : "The visual score is generated from sampled camera frames when the interview ends."}
+        </p>
+      </section>
+    );
+  }
+  const metrics = [
+    { label: "Engagement", value: analysis.engagement },
+    { label: "Attentiveness", value: analysis.attentiveness },
+    { label: "Composure", value: analysis.composure },
+    { label: "Presentation", value: analysis.presentation },
+    { label: "Eye contact", value: analysis.eye_contact_rate * 100 },
+    { label: "Visible on camera", value: analysis.face_visible_rate * 100 },
+  ];
+  return (
+    <section className="rounded-card border border-line bg-white p-5">
+      <div className="flex flex-wrap items-start gap-6">
+        <ScoreDial label="Visual" value={analysis.visual_score} size="lg" />
+        <div className="min-w-[220px] flex-1">
+          <h3 className="text-sm font-semibold text-slate-900">On-camera presence</h3>
+          <p className="mt-1 text-xs leading-5 text-slate-500">
+            Based on {analysis.frames_analyzed} camera frame{analysis.frames_analyzed === 1 ? "" : "s"} sampled at random
+            moments during the interview. It reflects observable signals only — visibility, gaze direction, framing and
+            expression steadiness — not personality or emotions. It is reported separately from your answer score.
+          </p>
+          {analysis.frames_analyzed < 3 ? (
+            <p className="mt-2 text-xs text-amber-700">Only a few frames were analyzed, so treat this as a rough indicator.</p>
+          ) : null}
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            {metrics.map((metric) => (
+              <MetricBar key={metric.label} label={metric.label} value={metric.value} />
+            ))}
+          </div>
+          {analysis.common_expressions.length ? (
+            <div className="mt-4 flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-slate-500">Most common expressions:</span>
+              {analysis.common_expressions.map((expression) => (
+                <span key={expression} className="rounded-full bg-surface-sunken px-2.5 py-1 text-xs text-slate-600">
+                  {expression}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {analysis.observations.length ? (
+            <ul className="mt-4 space-y-1.5 text-sm text-slate-600">
+              {analysis.observations.map((observation) => (
+                <li key={observation}>• {observation}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      </div>
+    </section>
   );
 }

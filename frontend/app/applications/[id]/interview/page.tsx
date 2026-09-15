@@ -2,12 +2,14 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Alert, Button, Card, CardHeader, Field, LinkButton, Select } from "@/components/ui";
+import { Alert, Button, Card, CardHeader, Field, LinkButton, Select, cx } from "@/components/ui";
 import {
   createInterview,
+  interviewSessionPath,
   listInterviews,
   MAX_INTERVIEW_QUESTIONS,
   type InterviewDifficulty,
+  type InterviewMode,
   type InterviewPersonality,
   type InterviewSummary,
 } from "@/lib/interviews";
@@ -28,6 +30,16 @@ const DIFFICULTIES: Array<{ value: InterviewDifficulty; label: string; descripti
   { value: "hard", label: "Hard", description: "Prepare for deeper, more challenging conversations." },
 ];
 
+const MODES: Array<{ value: InterviewMode; label: string; description: string }> = [
+  { value: "text", label: "Text", description: "Type your answers." },
+  { value: "audio", label: "Audio", description: "Speak your answers; they're transcribed and scored." },
+  {
+    value: "video",
+    label: "Video",
+    description: "A live on-camera interview. Answers are spoken and final, and your on-camera presence is scored.",
+  },
+];
+
 export default function InterviewSetupPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -35,6 +47,7 @@ export default function InterviewSetupPage() {
   const [personality, setPersonality] = useState<InterviewPersonality>("technical");
   const [difficulty, setDifficulty] = useState<InterviewDifficulty>("medium");
   const [questionTarget, setQuestionTarget] = useState(5);
+  const [mode, setMode] = useState<InterviewMode>("text");
   const [error, setError] = useState("");
   const [isStarting, setIsStarting] = useState(false);
 
@@ -65,12 +78,12 @@ export default function InterviewSetupPage() {
     setError("");
     setIsStarting(true);
     try {
-      const response = await createInterview(applicationId, personality, difficulty, questionTarget);
+      const response = await createInterview(applicationId, personality, difficulty, questionTarget, mode);
       if (!response.success || !response.data) {
         setError(response.error?.message ?? "Unable to create an interview session. Please try again.");
         return;
       }
-      router.push(`/interview-session/${response.data.interview_id}`);
+      router.push(interviewSessionPath(response.data.interview_id, response.data.mode));
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to create an interview session. Please try again.");
       setIsStarting(false);
@@ -95,7 +108,7 @@ export default function InterviewSetupPage() {
             <Alert tone="info">
               You have a session in progress ({resumable.answered_count}/{resumable.question_target ?? resumable.question_count}{" "}
               answered).{" "}
-              <a className="font-semibold underline" href={`/interview-session/${resumable.interview_id}`}>
+              <a className="font-semibold underline" href={interviewSessionPath(resumable.interview_id, resumable.mode)}>
                 Resume it
               </a>{" "}
               or view it from{" "}
@@ -105,6 +118,40 @@ export default function InterviewSetupPage() {
               .
             </Alert>
           ) : null}
+          <fieldset>
+            <legend className="text-sm font-medium text-slate-700">Interview mode</legend>
+            <div className="mt-2 grid gap-3 sm:grid-cols-3" role="radiogroup" aria-label="Interview mode">
+              {MODES.map((option) => (
+                <label
+                  key={option.value}
+                  className={cx(
+                    "flex cursor-pointer flex-col gap-1 rounded-lg border p-4 transition-colors",
+                    mode === option.value
+                      ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500"
+                      : "border-line bg-white hover:border-line-strong",
+                  )}
+                >
+                  <span className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                    <input
+                      type="radio"
+                      name="interview-mode"
+                      value={option.value}
+                      checked={mode === option.value}
+                      onChange={() => setMode(option.value)}
+                      className="accent-brand-600"
+                    />
+                    {option.label}
+                  </span>
+                  <span className="text-xs leading-5 text-slate-500">{option.description}</span>
+                </label>
+              ))}
+            </div>
+            {mode === "video" ? (
+              <p className="mt-2 text-xs text-slate-500">
+                Your browser will ask for camera and microphone access when the video interview opens.
+              </p>
+            ) : null}
+          </fieldset>
           <Field label="Interview personality" hint={PERSONALITIES.find((option) => option.value === personality)?.description}>
             <Select value={personality} onChange={(event) => setPersonality(event.target.value as InterviewPersonality)}>
               {PERSONALITIES.map((option) => (

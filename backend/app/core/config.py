@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.6-flash"
     gemini_transcription_model: str = ""
+    gemini_vision_model: str = ""
     interview_audio_max_mb: int = 10
     storage_backend: str = "local"
     storage_local_dir: str = "./storage"

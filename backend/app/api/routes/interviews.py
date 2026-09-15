@@ -10,17 +10,22 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import DbSession, PremiumUser
 from app.models.application import Application
 from app.db.resume_session import get_db as get_resume_db
-from app.models.interview import Interview, InterviewAnswer, InterviewAnswerEvaluation, InterviewQuestion
+from app.models.interview import (
+    Interview, InterviewAnswer, InterviewAnswerEvaluation, InterviewQuestion, InterviewVisualFrame,
+)
 from app.schemas.interview import (
     APIResponse, AnswerSubmitRequest, CompleteInterviewData, GeneratedAnswerEvaluation, GeneratedQuestion,
     InterviewAnswerData, InterviewAnswerEvaluationData, InterviewCreateRequest, InterviewData,
     InterviewFullSessionData, InterviewHistoryData, InterviewQuestionData, InterviewQuestionsData,
-    InterviewQuestionWithAnswerData, InterviewSummaryData,
+    InterviewQuestionWithAnswerData, InterviewSummaryData, VisualAnalysisData, VisualFrameData,
 )
 from app.services.interview_evaluation import evaluate_answer_for_application, summarize_interview_for_application
 from app.services.interview_questions import build_adaptation_context, generate_question_for_application
 
 from app.services.interview_audio import read_audio, transcribe_audio, save_audio, remove_audio
+from app.services.interview_visual import (
+    MAX_FRAMES_PER_INTERVIEW, aggregate_visual_analysis, analyze_frame, read_frame,
+)
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
@@ -34,6 +39,7 @@ def _interview_data(interview: Interview) -> InterviewData:
         status=interview.status,
         question_count=len(interview.questions),
         question_target=interview.question_target,
+        mode=interview.mode,
         started_at=interview.started_at,
     )
 
@@ -91,6 +97,7 @@ def create_interview(payload: InterviewCreateRequest, db: DbSession, current_use
         personality=payload.personality.value,
         difficulty=payload.difficulty.value,
         question_target=payload.question_target,
+        mode=payload.mode.value,
         status="created",
     )
     db.add(interview)
@@ -124,6 +131,21 @@ def _owned_interview(interview_id: UUID, user_id: UUID, db: DbSession) -> Interv
     if not interview:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
     return interview
+
+
+def _reject_video_answer_replacement(interview: Interview, question_id: UUID, db: DbSession) -> None:
+    """Video interviews are live: a submitted answer is final."""
+    if interview.mode != "video":
+        return
+    existing = db.scalar(select(InterviewAnswer.id).where(
+        InterviewAnswer.interview_id == interview.id, InterviewAnswer.question_id == question_id,
+    ))
+    if existing is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This question has already been answered")
+
+
+def _visual_analysis(interview: Interview) -> VisualAnalysisData | None:
+    return VisualAnalysisData.model_validate(interview.visual_summary) if interview.visual_summary else None
 
 
 def _answer_for_interview(answer_id: UUID, interview_id: UUID, db: DbSession) -> InterviewAnswer:
@@ -228,13 +250,14 @@ def _save_answer_row(interview_id, question_id, text, source, duration, db,
 def submit_answer(
     interview_id: UUID, payload: AnswerSubmitRequest, db: DbSession, current_user: PremiumUser,
 ):
-    _owned_interview(interview_id, current_user.id, db)
+    interview = _owned_interview(interview_id, current_user.id, db)
     question = db.scalar(select(InterviewQuestion).where(
         InterviewQuestion.id == payload.question_id, InterviewQuestion.interview_id == interview_id
     ).with_for_update())
     if not question:
         # Do not disclose whether a question exists in another session.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
+    _reject_video_answer_replacement(interview, question.id, db)
     answer, old_audio_key = _save_answer_row(
         interview_id, question.id, payload.answer_text, payload.source.value,
         payload.duration_seconds, db,
@@ -259,6 +282,7 @@ async def submit_audio_answer(
     ))
     if question is None:
         raise HTTPException(404, "Question not found")
+    _reject_video_answer_replacement(interview, question.id, db)
     try:
         data, mime = await read_audio(audio)
     finally:
@@ -277,6 +301,7 @@ async def submit_audio_answer(
         ).with_for_update())
         if question is None:
             raise HTTPException(404, "Question not found")
+        _reject_video_answer_replacement(interview, question_id, db)
         answer, old_key = _save_answer_row(
             interview_id, question_id, transcript, "voice", duration_seconds, db,
             audio_key=key, audio_mime=mime, audio_size=len(data),
@@ -290,6 +315,47 @@ async def submit_audio_answer(
     db.refresh(answer)
     # Same two-step contract as typed answers: the UI calls the existing evaluator.
     return APIResponse(success=True, data=_answer_data(answer), error=None)
+
+
+@router.post("/{interview_id}/visual-frames", response_model=APIResponse)
+async def submit_visual_frame(
+    interview_id: UUID, db: DbSession, current_user: PremiumUser,
+    frame: UploadFile = File(...),
+    question_id: UUID | None = Form(default=None),
+):
+    def active_video_interview() -> Interview:
+        interview = _owned_interview(interview_id, current_user.id, db)
+        if interview.mode != "video":
+            raise HTTPException(status.HTTP_409_CONFLICT, "Visual analysis is only available for video interviews")
+        # Frames are accepted only while the interview is actually running.
+        if interview.status != "in_progress":
+            raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not currently active")
+        return interview
+
+    interview = active_video_interview()
+    frame_count = db.scalar(select(func.count()).where(InterviewVisualFrame.interview_id == interview.id)) or 0
+    if frame_count >= MAX_FRAMES_PER_INTERVIEW:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Frame sampling limit reached for this interview")
+    try:
+        data = await read_frame(frame)
+    finally:
+        await frame.close()
+    # Do not hold a database transaction while waiting on the provider.
+    db.rollback()
+    analysis = await analyze_frame(data)
+
+    interview = active_video_interview()
+    if question_id is not None and db.scalar(select(InterviewQuestion.id).where(
+        InterviewQuestion.id == question_id, InterviewQuestion.interview_id == interview.id,
+    )) is None:
+        question_id = None
+    row = InterviewVisualFrame(interview_id=interview.id, question_id=question_id, **analysis.model_dump())
+    db.add(row)
+    db.commit()
+    frames_analyzed = db.scalar(select(func.count()).where(InterviewVisualFrame.interview_id == interview.id)) or 0
+    return APIResponse(success=True, data=VisualFrameData(
+        frame_id=row.id, interview_id=interview.id, frames_analyzed=frames_analyzed,
+    ), error=None)
 
 
 @router.post("/{interview_id}/answers/{answer_id}/evaluate", response_model=APIResponse)
@@ -377,7 +443,7 @@ def list_interviews(
             question_target=interview.question_target,
             answered_count=answered_count, average_score=average_score, average_confidence=average_confidence,
             started_at=interview.started_at, completed_at=interview.completed_at, created_at=interview.created_at,
-            recommendation=interview.recommendation,
+            recommendation=interview.recommendation, mode=interview.mode, visual_score=interview.visual_score,
         ))
     return APIResponse(
         success=True, data=InterviewHistoryData(items=items, total=total, page=page, page_size=page_size), error=None,
@@ -425,6 +491,7 @@ def get_interview_full(interview_id: UUID, db: DbSession, current_user: PremiumU
         recommendation=interview.recommendation,
         average_score=(sum(scores) / len(scores)) if scores else None,
         average_confidence=(sum(confidences) / len(confidences)) if confidences else None,
+        mode=interview.mode, visual_analysis=_visual_analysis(interview),
         items=items,
     ), error=None)
 
@@ -454,6 +521,11 @@ async def complete_interview(interview_id: UUID, db: DbSession, current_user: Pr
         answered_count=answered_count, average_score=average_score, average_confidence=average_confidence,
         all_weaknesses=all_weaknesses, all_missing_points=all_missing_points, all_strengths=all_strengths,
     )
+    if interview.mode == "video":
+        frames = db.scalars(select(InterviewVisualFrame).where(InterviewVisualFrame.interview_id == interview.id)).all()
+        visual = aggregate_visual_analysis(list(frames))
+        interview.visual_score = visual.visual_score if visual else None
+        interview.visual_summary = visual.model_dump() if visual else None
     interview.status = "completed"
     interview.completed_at = datetime.now(timezone.utc)
     interview.summary = generated.summary
@@ -465,6 +537,7 @@ async def complete_interview(interview_id: UUID, db: DbSession, current_user: Pr
         average_score=average_score if answered_count else None,
         average_confidence=average_confidence if answered_count else None,
         summary=interview.summary, recommendation=interview.recommendation,
+        mode=interview.mode, visual_analysis=_visual_analysis(interview),
     ), error=None)
 
 

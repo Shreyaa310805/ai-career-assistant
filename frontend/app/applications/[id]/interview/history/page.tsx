@@ -3,7 +3,12 @@
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Badge, Button, Card, CardHeader, EmptyState, LinkButton, Skeleton } from "@/components/ui";
-import { deleteInterview, listInterviews, type InterviewSummary } from "@/lib/interviews";
+import {
+  interviewSessionPath,
+  deleteInterview,
+  listInterviews,
+  type InterviewSummary,
+} from "@/lib/interviews";
 
 const PAGE_SIZE = 10;
 
@@ -111,7 +116,7 @@ export default function InterviewHistoryPage() {
                         router.push(
                           isComplete
                             ? `/applications/${applicationId}/interview/${item.interview_id}`
-                            : `/interview-session/${item.interview_id}`,
+                            : interviewSessionPath(item.interview_id, item.mode),
                         )
                       }
                     >
@@ -119,6 +124,9 @@ export default function InterviewHistoryPage() {
                         <Badge tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Badge>
                         <Badge tone="brand">{item.personality}</Badge>
                         <Badge>{item.difficulty}</Badge>
+                        {item.mode && item.mode !== "text" ? (
+                          <Badge tone="info">{item.mode === "video" ? "Video" : "Audio"}</Badge>
+                        ) : null}
                       </div>
                       <div className="mt-3 flex flex-wrap items-center gap-4 text-sm text-slate-600">
                         <span>
@@ -127,6 +135,9 @@ export default function InterviewHistoryPage() {
                         {item.average_score !== null ? <span>Avg score {Math.round(item.average_score)}/100</span> : null}
                         {item.average_confidence !== null ? (
                           <span>Avg confidence {Math.round(item.average_confidence)}/100</span>
+                        ) : null}
+                        {item.visual_score !== null && item.visual_score !== undefined ? (
+                          <span>Visual {item.visual_score}/100</span>
                         ) : null}
                         <span className="text-slate-400">{new Date(item.created_at).toLocaleDateString()}</span>
                       </div>
@@ -141,7 +152,7 @@ export default function InterviewHistoryPage() {
                           View results
                         </Button>
                       ) : (
-                        <Button size="sm" onClick={() => router.push(`/interview-session/${item.interview_id}`)}>
+                        <Button size="sm" onClick={() => router.push(interviewSessionPath(item.interview_id, item.mode))}>
                           Resume
                         </Button>
                       )}

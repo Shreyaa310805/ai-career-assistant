@@ -25,6 +25,12 @@ class AnswerSourceEnum(str, Enum):
     voice = "voice"
 
 
+class InterviewModeEnum(str, Enum):
+    text = "text"
+    audio = "audio"
+    video = "video"
+
+
 class RecommendationEnum(str, Enum):
     strong_hire = "strong_hire"
     hire = "hire"
@@ -40,6 +46,7 @@ class InterviewCreateRequest(BaseModel):
     personality: PersonalityEnum
     difficulty: DifficultyEnum
     question_target: int = Field(default=5, ge=1, le=MAX_INTERVIEW_QUESTIONS)
+    mode: InterviewModeEnum = InterviewModeEnum.text
 
 
 class InterviewData(BaseModel):
@@ -50,6 +57,7 @@ class InterviewData(BaseModel):
     status: str
     question_count: int = 0
     question_target: int
+    mode: str = "text"
     started_at: datetime | None = None
 
 
@@ -142,6 +150,8 @@ class InterviewSummaryData(BaseModel):
     completed_at: datetime | None = None
     created_at: datetime
     recommendation: str | None = None
+    mode: str = "text"
+    visual_score: int | None = None
 
 
 class InterviewHistoryData(BaseModel):
@@ -155,6 +165,39 @@ class InterviewQuestionWithAnswerData(BaseModel):
     question: InterviewQuestionData
     answer: InterviewAnswerData | None = None
     evaluation: InterviewAnswerEvaluationData | None = None
+
+
+class GeneratedFrameAnalysis(BaseModel):
+    """Gemini structured-output contract for one sampled interview camera frame."""
+
+    face_visible: bool
+    multiple_people: bool
+    looking_at_camera: bool
+    engagement_score: int = Field(ge=0, le=100)
+    attentiveness_score: int = Field(ge=0, le=100)
+    composure_score: int = Field(ge=0, le=100)
+    presentation_score: int = Field(ge=0, le=100)
+    expression: str = Field(min_length=1, max_length=40)
+    observation: str = Field(default="", max_length=240)
+
+
+class VisualFrameData(BaseModel):
+    frame_id: UUID
+    interview_id: UUID
+    frames_analyzed: int
+
+
+class VisualAnalysisData(BaseModel):
+    visual_score: int = Field(ge=0, le=100)
+    frames_analyzed: int
+    face_visible_rate: float
+    eye_contact_rate: float
+    engagement: float
+    attentiveness: float
+    composure: float
+    presentation: float
+    common_expressions: list[str] = Field(default_factory=list)
+    observations: list[str] = Field(default_factory=list)
 
 
 class InterviewFullSessionData(BaseModel):
@@ -171,6 +214,8 @@ class InterviewFullSessionData(BaseModel):
     recommendation: str | None = None
     average_score: float | None = None
     average_confidence: float | None = None
+    mode: str = "text"
+    visual_analysis: VisualAnalysisData | None = None
     items: list[InterviewQuestionWithAnswerData]
 
 
@@ -193,6 +238,8 @@ class CompleteInterviewData(BaseModel):
     average_confidence: float | None = None
     summary: str
     recommendation: str
+    mode: str = "text"
+    visual_analysis: VisualAnalysisData | None = None
 
 
 class ErrorDetail(BaseModel):
@@ -212,6 +259,7 @@ class APIResponse(BaseModel):
         | InterviewHistoryData
         | InterviewFullSessionData
         | CompleteInterviewData
+        | VisualFrameData
         | None
     ) = None
     error: ErrorDetail | None = None

@@ -47,6 +47,7 @@ def test_interview_creation_preserves_contract_and_requires_premium():
         "status": "created",
         "question_count": 0,
         "question_target": 5,
+        "mode": "text",
         "started_at": None,
     }
 

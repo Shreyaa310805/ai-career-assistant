@@ -82,6 +82,11 @@ export default function InterviewSessionPage() {
           router.replace(`/applications/${full.application_id}/interview/${interviewId}`);
           return;
         }
+        if (full.mode === "video") {
+          router.replace(`/video-interview/${interviewId}`);
+          return;
+        }
+        setAnswerMode(full.mode === "audio" ? "audio" : "typed");
         setPersonality(full.personality);
         setDifficulty(full.difficulty);
         setQuestionTarget(full.question_target);

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -17,12 +17,15 @@ class Interview(Base):
     personality: Mapped[str] = mapped_column(String(30), nullable=False)
     difficulty: Mapped[str] = mapped_column(String(20), nullable=False)
     question_target: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
+    mode: Mapped[str] = mapped_column(String(10), nullable=False, default="text", server_default="text")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="created", server_default="created")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     recommendation: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    visual_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    visual_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     questions: Mapped[list["InterviewQuestion"]] = relationship(
         back_populates="interview", cascade="all, delete-orphan", order_by="InterviewQuestion.question_number"
@@ -102,3 +105,27 @@ class InterviewAnswerEvaluation(Base):
     )
 
     answer: Mapped[InterviewAnswer] = relationship(back_populates="evaluation")
+
+
+class InterviewVisualFrame(Base):
+    """Structured analysis of one sampled camera frame. The image itself is never stored."""
+
+    __tablename__ = "interview_visual_frames"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    interview_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("interviews.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    question_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("interview_questions.id", ondelete="SET NULL"), nullable=True
+    )
+    face_visible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    multiple_people: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    looking_at_camera: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    engagement_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    attentiveness_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    composure_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    presentation_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    expression: Mapped[str] = mapped_column(String(40), nullable=False)
+    observation: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
