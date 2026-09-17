@@ -16,6 +16,11 @@ export type ApplicationInterviewReport = {
   sessions: { interview_id: string; personality: string; difficulty: string; mode: string; overall_score: number | null;
     questions_attempted: number; completed_at: string | null; strengths: string[]; areas_to_improve: string[] }[];
   strengths: string[]; areas_to_improve: string[]; recommended_focus_areas: string[];
+  interview_improvement_roadmap: Array<{ focus: string; priority: "High" | "Medium"; score: number | null; reason: string }>;
+  interview_skill_recommendations: Array<{
+    skill: string; priority: "High" | "Medium"; score: number; reason: string;
+    resources: Array<{ title: string; provider: string; difficulty: string; type: string; url: string }>;
+  }>;
   skill_evidence: { skill: string; status: string; score: number | null; evidence: { interview_id: string; question_id: string; reason: string }[] }[];
   per_question_analysis: Question[];
 };

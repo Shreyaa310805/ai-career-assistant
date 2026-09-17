@@ -137,7 +137,7 @@ Derived from the caller's stored resume and its latest ATS report. Never from fi
 | Method | Path | Access | Request | Response |
 | --- | --- | --- | --- | --- |
 | GET | `/career/roadmap/{application_id}` | Premium | — | `200` roadmap (below) |
-| POST | `/career/what-if/{application_id}` | Premium | `{skill, target_level: 0..1}` | `200` projection |
+| POST | `/career/what-if/{application_id}` | Premium | `{skill, target_level: Low (0.33), Medium (0.66), or High (1)}` | `200` projection |
 
 ```jsonc
 // GET /career/roadmap/{application_id}
@@ -152,7 +152,10 @@ Derived from the caller's stored resume and its latest ATS report. Never from fi
 ```
 
 Errors: `404` application not found or not owned, `409` no resume uploaded / no ATS analysis yet,
-`422` (what-if) the skill is not in the current missing-skills set.
+`422` (what-if) the skill is not required for the role, or the target is not above its current proficiency. Missing requirements are shown as Low; requirements evidenced in the resume are shown as Medium.
+
+This roadmap is based only on the selected resume, job description, and ATS analysis. It remains stable after interviews.
+The application interview report exposes a separate interview-only improvement roadmap.
 
 ## Access probes — `/access`
 

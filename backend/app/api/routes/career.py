@@ -14,6 +14,16 @@ from app.models.resume import AtsReport, Resume
 # PREMIUM feature, enforced here rather than in the client.
 router = APIRouter(prefix="/career", tags=["career"])
 
+LOW_PROFICIENCY = 0.33
+MEDIUM_PROFICIENCY = 0.66
+HIGH_PROFICIENCY = 1.0
+PROFICIENCY_LEVELS = (LOW_PROFICIENCY, MEDIUM_PROFICIENCY, HIGH_PROFICIENCY)
+PROFICIENCY_LABELS = {
+    LOW_PROFICIENCY: "Low",
+    MEDIUM_PROFICIENCY: "Medium",
+    HIGH_PROFICIENCY: "High",
+}
+
 
 class WhatIfRequest(BaseModel):
     skill: str = Field(min_length=1, max_length=120)
@@ -184,20 +194,31 @@ async def simulate_what_if(
 ):
     """Estimate a gain for a real ATS gap without trusting client-side scores."""
     application, resume, report = await _load_career_data(application_id, current_user, application_db, resume_db)
-    missing = _skill_map(report.missing_skills)
+    required = _skill_map([*report.missing_skills, *report.matched_skills])
+    matched = _skill_map(report.matched_skills)
     skill_key = payload.skill.strip().lower()
-    if skill_key not in missing:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Choose a skill currently missing from this ATS analysis")
+    if skill_key not in required:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Choose a skill required by this ATS analysis")
 
-    ordered_missing = list(missing)
-    importance = _priority_for_missing_skills([missing[key] for key in ordered_missing], application.role)[ordered_missing.index(skill_key)]["priority_score"]
-    improvement = round(float(importance) * payload.target_level * 20, 2)
+    ordered_required = list(required)
+    importance = _priority_for_missing_skills([required[key] for key in ordered_required], application.role)[ordered_required.index(skill_key)]["priority_score"]
+    # The ATS report only evidences whether a role skill is present.  Present
+    # skills start at Medium; missing requirements start at Low.
+    current_level = MEDIUM_PROFICIENCY if skill_key in matched else LOW_PROFICIENCY
+    if payload.target_level not in PROFICIENCY_LEVELS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Choose Low, Medium, or High as the target proficiency level",
+        )
+    if payload.target_level <= current_level:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Choose a proficiency level above the current level")
+    improvement = round(float(importance) * (payload.target_level - current_level) * 20, 2)
     estimated_match = round(min(report.match_score + improvement, 100), 2)
     impact = "High" if improvement >= 10 else "Medium" if improvement >= 5 else "Low"
     return {
-        "application_id": str(application_id), "skill": missing[skill_key], "current_level": 0,
+        "application_id": str(application_id), "skill": required[skill_key], "current_level": current_level,
         "target_level": payload.target_level, "current_match_score": round(report.match_score, 2),
         "estimated_match_score": estimated_match, "estimated_improvement": improvement,
         "impact": impact,
-        "message": f"Reaching {round(payload.target_level * 100)}% proficiency in {missing[skill_key]} is estimated to improve this role match by {improvement} points.",
+        "message": f"Improving {required[skill_key]} from {PROFICIENCY_LABELS[current_level]} to {PROFICIENCY_LABELS[payload.target_level]} proficiency is estimated to improve this role match by {improvement} points.",
     }

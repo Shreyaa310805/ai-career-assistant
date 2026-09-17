@@ -64,6 +64,8 @@ Application REPORT keys and nested shapes (numbers below are illustrative; `null
   "skill_evidence": [{"skill": "Python", "status": "demonstrated", "score": 80, "evidence": [{"interview_id": "UUID", "question_id": "UUID", "score": 80, "reason": "Recorded evaluator feedback"}]}],
   "demonstrated_skills": ["Python"], "skills_needing_improvement": [],
   "assessed_skills": ["Python"], "recommended_focus_areas": ["More depth"],
+  "interview_improvement_roadmap": [{"focus": "More depth", "priority": "Medium", "score": null, "reason": "This recurring improvement point was recorded in the interview evaluation feedback."}],
+  "interview_skill_recommendations": [{"skill": "Python", "priority": "Medium", "score": 60, "reason": "Recommended from the interview evaluation score of 60/100.", "resources": [{"title": "Python Official Tutorial", "provider": "Python", "difficulty": "beginner", "type": "documentation", "url": "https://docs.python.org/3/tutorial/"}]}],
   "readiness": "Ready", "summary": "Deterministic synthesis"
 }
 ```
@@ -110,7 +112,7 @@ Complete response retains interview_id, status, completed_at, question_count, an
 
 ## Person 3 handoff
 
-Consume `data.skill_evidence`, `demonstrated_skills`, `skills_needing_improvement`, `assessed_skills`, and `recommended_focus_areas` from the additive application JSON endpoint. No Person 3 API is called or modified.
+Consume `data.skill_evidence`, `demonstrated_skills`, `skills_needing_improvement`, `assessed_skills`, and `recommended_focus_areas` from the additive application JSON endpoint. No Person 3 API is called or modified. `interview_improvement_roadmap` and `interview_skill_recommendations` are interview-report-only outputs; they must not modify the separate resume/JD/ATS career roadmap.
 
 Skill identities are trimmed and case-folded for merging, with first observed spelling preserved. Use expected_skills; use topic only if no expected_skills exist. Correctness scores from associated evaluated questions are the skill proxy; no individual per-skill score was measured. Evidence reason is recorded evaluator feedback, with interview/question provenance. >=75 is demonstrated, below75 needs_improvement. A known skill from an unanswered/unevaluated completed-session question has null score, empty evidence, and not_assessed. Skills never mentioned by completed-session questions are omitted, **not missing**. Person 3 can join its own required-skill set and treat absent evidence as not_assessed. A low score is not proof that a skill is absent.
 

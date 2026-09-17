@@ -81,8 +81,9 @@ npm run dev
 
 Open `http://localhost:3000`. The API and Swagger UI are at `http://localhost:8000` and `/docs`.
 
-For the complete containerized setup, run `docker compose up --build`. The backend runs migrations before
-starting.
+For the complete containerized setup, copy `.env.example` to `.env`, then run `docker compose up --build`.
+The backend runs migrations before starting. Open the containerized frontend at `http://localhost:3002` and
+the API/Swagger UI at `http://localhost:8001/docs`.
 
 ## Configuration
 

@@ -34,6 +34,76 @@ def sessions_query(application_id):
     )
 
 
+def interview_improvement_roadmap(skill_evidence, focus_areas):
+    """Create a report-local roadmap from completed interview evidence only."""
+    steps = []
+    included = set()
+    weak_skills = (item for item in skill_evidence if item["status"] == "needs_improvement" and item["score"] is not None)
+    for item in sorted(weak_skills, key=lambda item: (float(item["score"]), item["skill"].casefold())):
+        skill = item["skill"]
+        included.add(skill.casefold())
+        score = float(item["score"])
+        steps.append({
+            "focus": skill,
+            "priority": "High" if score < 50 else "Medium",
+            "score": score,
+            "reason": f"Interview answers associated with {skill} averaged {score:.0f}/100 for correctness.",
+        })
+    for focus in focus_areas:
+        normalized = focus.strip().casefold()
+        if not normalized or normalized in included:
+            continue
+        included.add(normalized)
+        steps.append({
+            "focus": focus,
+            "priority": "Medium",
+            "score": None,
+            "reason": "This recurring improvement point was recorded in the interview evaluation feedback.",
+        })
+    return steps
+
+
+_INTERVIEW_SKILL_RESOURCES = {
+    "python": [
+        {"title": "Python Official Tutorial", "provider": "Python", "difficulty": "beginner", "type": "documentation", "url": "https://docs.python.org/3/tutorial/"},
+        {"title": "Python Practice Problems", "provider": "HackerRank", "difficulty": "intermediate", "type": "practice", "url": "https://www.hackerrank.com/domains/python"},
+    ],
+    "sql": [
+        {"title": "SQL Tutorial", "provider": "PostgreSQL", "difficulty": "beginner", "type": "documentation", "url": "https://www.postgresql.org/docs/current/tutorial.html"},
+        {"title": "SQL Practice", "provider": "HackerRank", "difficulty": "intermediate", "type": "practice", "url": "https://www.hackerrank.com/domains/sql"},
+    ],
+    "api design": [
+        {"title": "Web API Design Guide", "provider": "Google Cloud", "difficulty": "intermediate", "type": "documentation", "url": "https://cloud.google.com/apis/design"},
+    ],
+}
+
+
+def interview_skill_recommendations(skill_evidence):
+    """Return learning resources only for assessed interview skill gaps."""
+    recommendations = []
+    for item in sorted(
+        (item for item in skill_evidence if item["status"] == "needs_improvement" and item["score"] is not None),
+        key=lambda item: (float(item["score"]), item["skill"].casefold()),
+    ):
+        skill = item["skill"]
+        score = float(item["score"])
+        resources = _INTERVIEW_SKILL_RESOURCES.get(skill.casefold())
+        if not resources:
+            query = skill.strip().replace(" ", "+")
+            resources = [{
+                "title": f"Practice {skill}", "provider": "Web search", "difficulty": "intermediate", "type": "practice",
+                "url": f"https://www.google.com/search?q={query}+interview+practice",
+            }]
+        recommendations.append({
+            "skill": skill,
+            "priority": "High" if score < 50 else "Medium",
+            "score": score,
+            "reason": f"Recommended from the interview evaluation score of {score:.0f}/100.",
+            "resources": resources,
+        })
+    return recommendations
+
+
 def session_report(interview, db):
     frames = list(db.scalars(select(InterviewVisualFrame).where(InterviewVisualFrame.interview_id == interview.id)).all()) if interview.mode == "video" else []
     visual = aggregate_visual_analysis(frames)
@@ -111,6 +181,7 @@ def application_report(application, db):
     frame_count = sum(v["observations_count"] for v in visuals)
     visual_score = round(sum(v["score"] * v["observations_count"] for v in visuals) / frame_count, 2) if frame_count else None
     dates = [s["completed_at"] for s in sessions if s["completed_at"]]
+    focus_areas = ranked([*weak, *gaps])[:12]
     return {
         "application_id": str(application.id), "company": application.company, "role": application.role,
         "generated_at": datetime.now(timezone.utc), "completed_session_count": len(sessions),
@@ -122,7 +193,9 @@ def application_report(application, db):
         "sessions": sessions, "per_question_analysis": questions, "strengths": strengths, "areas_to_improve": gaps,
         "skill_evidence": evidence, "demonstrated_skills": [s["skill"] for s in evidence if s["status"] == "demonstrated"],
         "skills_needing_improvement": weak, "assessed_skills": [s["skill"] for s in evidence if s["status"] != "not_assessed"],
-        "recommended_focus_areas": ranked([*weak, *gaps])[:12], "readiness": readiness(metrics["overall_score"]),
+        "recommended_focus_areas": focus_areas, "readiness": readiness(metrics["overall_score"]),
+        "interview_improvement_roadmap": interview_improvement_roadmap(evidence, focus_areas),
+        "interview_skill_recommendations": interview_skill_recommendations(evidence),
         "summary": f"{len(sessions)} completed sessions and {len(questions)} evaluated answers. {readiness(metrics['overall_score'])}. " + ("Focus next on " + "; ".join([*weak, *gaps][:3]) + "." if weak or gaps else ""),
     }
 
@@ -163,6 +236,15 @@ def report_pdf(report):
     write('Skill evidence', 14)
     for skill in report['skill_evidence']:
         write(f"{skill['skill']}: {skill['status']} | {skill['score']}")
+    write('Interview improvement roadmap', 14)
+    for index, step in enumerate(report['interview_improvement_roadmap'], start=1):
+        score = f" | correctness: {step['score']}" if step['score'] is not None else ""
+        write(f"{index}. {step['focus']} ({step['priority']}){score}\n{step['reason']}")
+    write('Interview skill recommendations', 14)
+    for recommendation in report['interview_skill_recommendations']:
+        write(f"{recommendation['skill']} ({recommendation['priority']}) | score: {recommendation['score']}")
+        for resource in recommendation['resources']:
+            write(f"- {resource['title']} ({resource['provider']})")
     write('Per-question evaluation', 14)
     for q in report['per_question_analysis']:
         write(f"Session {q['interview_id']} / Question {q['question_number']} ({q['answer_modality']}): {q['question']}")

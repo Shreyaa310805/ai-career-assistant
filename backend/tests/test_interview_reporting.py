@@ -65,6 +65,9 @@ def test_multiple_incomplete_unevaluated_and_skill_semantics():
     assert report['total_questions_evaluated'] == 2
     assert all(v == 60 for k,v in report['metrics'].items() if k != 'confidence_score')
     assert report['skills_needing_improvement'] == ['API Design', 'Python']
+    assert [step['focus'] for step in report['interview_improvement_roadmap'][:2]] == ['API Design', 'Python']
+    assert all(step['priority'] == 'Medium' for step in report['interview_improvement_roadmap'][:2])
+    assert [item['skill'] for item in report['interview_skill_recommendations']] == ['API Design', 'Python']
     assert client.get(f'/api/v1/interviews/{incomplete}/report', headers=headers).status_code == 409
     pdf = client.get(f'/api/v1/applications/{app_id}/interview-report/pdf', headers=headers)
     assert pdf.status_code == 200 and pdf.headers['content-type'] == 'application/pdf'
