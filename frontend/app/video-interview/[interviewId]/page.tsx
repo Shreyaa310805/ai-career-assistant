@@ -91,7 +91,7 @@ export default function VideoInterviewPage() {
   const discardRecordingRef = useRef(false);
   const recordingStartedRef = useRef(0);
   const questionIdRef = useRef<string | null>(null);
-  const frameUploadRef = useRef<Promise<unknown> | null>(null);
+  const pendingFrameUploadsRef = useRef<Set<Promise<unknown>>>(new Set());
   const mountedRef = useRef(true);
 
   const stopMedia = useCallback(() => {
@@ -229,7 +229,7 @@ export default function VideoInterviewPage() {
   }, [answerPhase]);
 
   const cameraLive = cameraState === "live";
-  const captureActive = isVideoSession && cameraLive && Boolean(question) && !isEnding && !visualNotice;
+  const captureActive = isVideoSession && cameraLive && Boolean(question) && !isEnding;
 
   // Random-interval frame sampling, strictly scoped to an active, started video interview.
   useEffect(() => {
@@ -239,14 +239,14 @@ export default function VideoInterviewPage() {
 
     const schedule = (first: boolean) => {
       if (cancelled) return;
-      timer = window.setTimeout(capture, first ? randomBetween(4000, 12000) : randomBetween(15000, 35000));
+      timer = window.setTimeout(capture, first ? 300 : randomBetween(15000, 35000));
     };
 
     const capture = async () => {
       if (cancelled) return;
       const video = videoRef.current;
       if (document.visibilityState !== "visible" || !video || video.readyState < 2 || !video.videoWidth) {
-        schedule(false);
+        timer = window.setTimeout(capture, 1000);
         return;
       }
       const canvas = canvasRef.current ?? (canvasRef.current = document.createElement("canvas"));
@@ -256,19 +256,21 @@ export default function VideoInterviewPage() {
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.75));
       if (cancelled || !blob) return;
       const upload = submitVisualFrame(interviewId, blob, questionIdRef.current ?? undefined);
-      frameUploadRef.current = upload;
+      pendingFrameUploadsRef.current.add(upload);
       try {
         const response = await upload;
-        if (!cancelled && response.data) setFramesAnalyzed(response.data.frames_analyzed);
+        if (!cancelled && response.data) {
+          setFramesAnalyzed(response.data.frames_analyzed);
+          setVisualNotice("");
+        }
       } catch (err) {
         const status = err instanceof ApiRequestError ? err.status : 0;
         if (status === 503) {
-          if (!cancelled) setVisualNotice("Visual analysis isn't configured on the server, so no presence score will be generated.");
-          return;
+          if (!cancelled) setVisualNotice("Presence analysis is retrying…");
         }
         if (status === 409 || status === 429 || status === 401 || status === 403 || status === 404) return;
       } finally {
-        if (frameUploadRef.current === upload) frameUploadRef.current = null;
+        pendingFrameUploadsRef.current.delete(upload);
       }
       schedule(false);
     };
@@ -408,10 +410,43 @@ export default function VideoInterviewPage() {
     if (!interviewId || !applicationId || isEnding || answerPhase !== "idle") return;
     setError("");
     setIsEnding(true);
+    // Always submit one final frame before stopping the camera. Short sessions
+    // can otherwise finish before the random sampler's first frame lands.
+    const video = videoRef.current;
+    if (cameraLive && video && video.readyState >= 2 && video.videoWidth) {
+      const canvas = canvasRef.current ?? (canvasRef.current = document.createElement("canvas"));
+      canvas.width = FRAME_WIDTH;
+      canvas.height = Math.round((video.videoHeight / video.videoWidth) * FRAME_WIDTH);
+      canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.75));
+      if (blob) {
+        const upload = submitVisualFrame(interviewId, blob, questionIdRef.current ?? undefined);
+        pendingFrameUploadsRef.current.add(upload);
+        try {
+          const response = await Promise.race([
+            upload,
+            new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("Visual analysis timed out")), 45000)),
+          ]);
+          if (response.data) {
+            setFramesAnalyzed(response.data.frames_analyzed);
+            setVisualNotice("");
+          }
+        } catch {
+          // Visual analysis is supplementary. Never turn a provider hiccup into
+          // a misleading interview-end error or prevent the result from saving.
+          setVisualNotice("Presence analysis was unavailable for the final frame; finishing the interview.");
+        } finally {
+          pendingFrameUploadsRef.current.delete(upload);
+        }
+      }
+    }
     stopMedia();
-    // Let an in-flight frame land before the server aggregates the visual score.
-    if (frameUploadRef.current) {
-      await Promise.race([frameUploadRef.current.catch(() => undefined), new Promise((r) => setTimeout(r, 10000))]);
+    // Let every in-flight frame land before the server aggregates the visual score.
+    if (pendingFrameUploadsRef.current.size) {
+      await Promise.race([
+        Promise.allSettled([...pendingFrameUploadsRef.current]),
+        new Promise((resolve) => window.setTimeout(resolve, 5000)),
+      ]);
     }
     try {
       const response = await completeInterview(interviewId);

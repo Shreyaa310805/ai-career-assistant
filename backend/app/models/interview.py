@@ -71,6 +71,7 @@ class InterviewAnswer(Base):
     answer_text: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="typed")
     duration_seconds: Mapped[float | None] = mapped_column(nullable=True)
+    delivery_signals: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     interview: Mapped[Interview] = relationship()

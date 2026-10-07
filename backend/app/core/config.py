@@ -14,8 +14,17 @@ class Settings(BaseSettings):
     resume_database_url: str = "sqlite+aiosqlite:///./resume_ats.db"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.6-flash"
-    gemini_transcription_model: str = ""
-    gemini_vision_model: str = ""
+    # Dedicated speech-to-text model; multimodal chat models can be capacity
+    # constrained even when the rest of the interview flow is available.
+    gemini_transcription_model: str = "gemini-3.5-transcribe"
+    openai_api_key: str = ""
+    openai_transcription_model: str = "gpt-4o-mini-transcribe"
+    groq_api_key: str = ""
+    groq_transcription_model: str = "whisper-large-v3-turbo"
+    # Groq's currently supported multimodal model. Keep this separate from
+    # the transcription model because the two endpoints use different models.
+    groq_vision_model: str = "qwen/qwen3.8-27b"
+    gemini_vision_model: str = "gemini-3.5-flash"
     interview_audio_max_mb: int = 10
     storage_backend: str = "local"
     storage_local_dir: str = "./storage"

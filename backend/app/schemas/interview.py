@@ -198,6 +198,7 @@ class VisualAnalysisData(BaseModel):
     presentation: float
     common_expressions: list[str] = Field(default_factory=list)
     observations: list[str] = Field(default_factory=list)
+    visible_tension: float = 0
 
 
 class InterviewFullSessionData(BaseModel):

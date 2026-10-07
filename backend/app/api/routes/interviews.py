@@ -23,6 +23,7 @@ from app.services.interview_evaluation import evaluate_answer_for_application, s
 from app.services.interview_questions import build_adaptation_context, generate_question_for_application
 
 from app.services.interview_audio import read_audio, transcribe_audio, save_audio, remove_audio
+from app.services.resumes.gemini_service import speech_delivery_signals
 from app.services.interview_visual import (
     MAX_FRAMES_PER_INTERVIEW, aggregate_visual_analysis, analyze_frame, read_frame,
 )
@@ -225,7 +226,7 @@ def list_questions(interview_id: UUID, db: DbSession, current_user: PremiumUser)
 
 
 def _save_answer_row(interview_id, question_id, text, source, duration, db,
-                     audio_key=None, audio_mime=None, audio_size=None):
+                     audio_key=None, audio_mime=None, audio_size=None, delivery_signals=None):
     """Shared text/audio persistence. Caller holds the question row lock."""
     answer = db.scalar(select(InterviewAnswer).where(
         InterviewAnswer.interview_id == interview_id, InterviewAnswer.question_id == question_id,
@@ -243,6 +244,7 @@ def _save_answer_row(interview_id, question_id, text, source, duration, db,
     answer.audio_storage_key = audio_key
     answer.audio_mime_type = audio_mime
     answer.audio_size_bytes = audio_size
+    answer.delivery_signals = delivery_signals
     return answer, old_key
 
 
@@ -290,6 +292,9 @@ async def submit_audio_answer(
     # Do not hold a database transaction while waiting on the provider.
     db.rollback()
     transcript = await transcribe_audio(data, mime)
+    delivery = speech_delivery_signals(
+        transcript, duration_seconds, getattr(transcript, "segments", None)
+    )
     key = await save_audio(data, mime, interview_id)
     old_key = None
     try:
@@ -305,6 +310,7 @@ async def submit_audio_answer(
         answer, old_key = _save_answer_row(
             interview_id, question_id, transcript, "voice", duration_seconds, db,
             audio_key=key, audio_mime=mime, audio_size=len(data),
+            delivery_signals=delivery,
         )
         db.commit()
     except Exception:
@@ -375,6 +381,15 @@ async def evaluate_answer(
     generated: GeneratedAnswerEvaluation = await evaluate_answer_for_application(
         application=application, interview=interview, question=question, answer=answer, resume_db=resume_db,
     )
+    if answer.source == "voice":
+        delivery = speech_delivery_signals(answer.answer_text, answer.duration_seconds)
+        delivery_penalty = min(20, delivery["filler_count"] * 4 + delivery["repeated_word_count"] * 3)
+        if delivery_penalty:
+            generated.confidence_score = max(0, generated.confidence_score - delivery_penalty)
+            generated.confidence_rationale = (
+                f"{generated.confidence_rationale.rstrip('.')} Delivery transcript also contains "
+                f"{delivery['filler_count']} filler word(s) and {delivery['repeated_word_count']} repeated word(s)."
+            )[:400]
     evaluation = db.scalar(select(InterviewAnswerEvaluation).where(InterviewAnswerEvaluation.answer_id == answer.id))
     if evaluation is None:
         evaluation = InterviewAnswerEvaluation(answer_id=answer.id)

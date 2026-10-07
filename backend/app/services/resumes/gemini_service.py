@@ -65,6 +65,32 @@ _HEDGE_WORDS = (
     "not certain", "not entirely sure", "correct me if", "not 100%",
 )
 _DECISIVE_MARKERS = ("definitely", "certainly", "clearly", "specifically", "exactly", "always")
+_FILLER_WORDS = ("um", "uh", "erm", "hmm", "hm", "ah", "like", "actually", "basically", "you know")
+
+
+def speech_delivery_signals(answer_text: str, duration_seconds: float | None = None, segments: list | None = None) -> dict:
+    """Extract conservative transcript-based delivery signals.
+
+    Plain transcription has no word timestamps, so this does not claim to
+    measure exact silent gaps or diagnose nervousness.
+    """
+    words = re.findall(r"[a-zA-Z][a-zA-Z'-]*", answer_text.lower())
+    filler_counts = {word: words.count(word) for word in _FILLER_WORDS if words.count(word)}
+    filler_count = sum(filler_counts.values())
+    repeated_words = sum(1 for left, right in zip(words, words[1:]) if left == right and len(left) > 2)
+    hedge_count = sum(answer_text.lower().count(phrase) for phrase in _HEDGE_WORDS)
+    wpm = round(len(words) / (duration_seconds / 60), 1) if duration_seconds and duration_seconds > 0 else None
+    gaps = []
+    if segments:
+        ordered = sorted((float(s.get("start", 0)), float(s.get("end", 0))) for s in segments)
+        gaps = [round(start - previous_end, 2) for (_, previous_end), (start, _) in zip(ordered, ordered[1:]) if start - previous_end >= 0.8]
+    return {
+        "word_count": len(words), "filler_count": filler_count, "filler_words": filler_counts,
+        "repeated_word_count": repeated_words, "hedge_count": hedge_count, "words_per_minute": wpm,
+        "long_pause_count": len(gaps), "longest_pause_seconds": max(gaps, default=None),
+        "pause_seconds": round(sum(gaps), 2),
+        "pause_detection": "segment_timestamps" if segments else "not_available_without_audio_timestamps",
+    }
 
 
 @dataclass
@@ -271,8 +297,10 @@ class GeminiService:
             "answer: hedging phrases (\"I think\", \"maybe\", \"I'm not sure\", \"possibly\"), vagueness, "
             "specificity of claims, and decisiveness of phrasing. Confidence is independent of correctness: a "
             "confident but wrong answer can still score high confidence, and a hedged but correct answer can "
-            "score lower confidence. Provide confidence_rationale as one concrete sentence naming the specific "
-            "language cues observed. "
+            "score lower confidence. Count explicit filler words (um, uh, erm, hmm, like, you know), repeated "
+            "words, and hedging as delivery hesitation signals when they are actually present in the transcript; "
+            "do not invent fillers or pauses. Provide confidence_rationale as one concrete sentence naming the "
+            "specific language cues observed. "
             f"{behavioral_guidance}\n\n"
             f"QUESTION: {context['question']}\nQUESTION TYPE: {question_type}\nTOPIC: {context['topic']}\n"
             f"DIFFICULTY: {context['difficulty']}\nEXPECTED SKILLS: {context['expected_skills']}\n"
@@ -535,12 +563,14 @@ def heuristic_confidence(*, answer_text: str, duration_seconds: float | None) ->
     words = re.findall(r"[a-zA-Z0-9+#.-]+", lowered)
     word_count = len(words) or 1
     hedge_hits = [phrase for phrase in _HEDGE_WORDS if phrase in lowered]
+    delivery = speech_delivery_signals(answer_text, duration_seconds)
     hedge_ratio = len(hedge_hits) / max(1, word_count / 40)
     decisive_hits = sum(marker in lowered for marker in _DECISIVE_MARKERS)
     specificity_bonus = min(15, word_count // 10)
 
     score = 55
     score -= min(40, round(hedge_ratio * 20))
+    score -= min(20, delivery["filler_count"] * 4 + delivery["repeated_word_count"] * 3)
     score += min(20, decisive_hits * 5)
     score += specificity_bonus
     if word_count < 8:
@@ -552,8 +582,15 @@ def heuristic_confidence(*, answer_text: str, duration_seconds: float | None) ->
             score -= 5
     score = max(0, min(100, score))
 
-    if hedge_hits:
-        rationale = f"Hedging language detected ({', '.join(hedge_hits[:2])})."
+    if hedge_hits or delivery["filler_count"] or delivery["repeated_word_count"]:
+        cues = []
+        if hedge_hits:
+            cues.append(f"hedging ({', '.join(hedge_hits[:2])})")
+        if delivery["filler_count"]:
+            cues.append(f"{delivery['filler_count']} filler word(s)")
+        if delivery["repeated_word_count"]:
+            cues.append(f"{delivery['repeated_word_count']} repeated word(s)")
+        rationale = f"Delivery hesitation signals detected: {', '.join(cues)}."
     elif decisive_hits:
         rationale = "Decisive, specific phrasing with no hedging detected."
     else:
@@ -959,9 +996,18 @@ def _question_for_new_angle(
     for angle, question in rotated:
         if question.strip() not in {item.strip() for item in previous_questions}:
             return question, angle
-    # All local fallback angles were exhausted. This preserves a natural
-    # question rather than fabricating a uniqueness suffix.
-    return rotated[0][1], rotated[0][0]
+    # All local fallback angles were exhausted. Keep the question natural but
+    # vary the requested evidence so a six-question session never repeats the
+    # exact same prompt when the provider is unavailable.
+    base_question, angle = rotated[0][1], rotated[0][0]
+    variations = (
+        " Include the evidence you would use to support your answer.",
+        " Compare your approach with one reasonable alternative.",
+        " Explain how you would validate the result in production.",
+    )
+    variation = variations[(question_number - 1) // len(options) % len(variations)]
+    candidate = f"{base_question.rstrip('?')}.{variation}"
+    return candidate, angle
 
 
 def _used_question_angles(previous_questions: list[str]) -> set[str]:

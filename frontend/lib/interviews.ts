@@ -17,6 +17,7 @@ export type VisualAnalysis = {
   attentiveness: number;
   composure: number;
   presentation: number;
+  visible_tension: number;
   common_expressions: string[];
   observations: string[];
 };
@@ -245,7 +246,9 @@ export const completeInterview = (interviewId: string) =>
 
 export function submitInterviewAudio(interviewId: string, questionId: string, audio: Blob, duration: number) {
   const body = new FormData();
-  body.append("audio", audio, "recording");
+  const extension = audio.type.split(";", 1)[0].split("/", 2)[1] === "mp4" ? "m4a"
+    : audio.type.includes("ogg") ? "ogg" : audio.type.includes("wav") ? "wav" : "webm";
+  body.append("audio", audio, `recording.${extension}`);
   body.append("duration_seconds", String(duration));
   return authedRequest<InterviewAnswerResponse>(`/interviews/${interviewId}/questions/${questionId}/audio-answer`, {
     method: "POST", body,

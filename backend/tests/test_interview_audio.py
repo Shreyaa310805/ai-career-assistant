@@ -91,11 +91,16 @@ def test_audio_auth_and_ownership(session):
     assert response.status_code == 404
 
 
-@pytest.mark.parametrize("data,mime,code", [(b"", "audio/webm", 422), (AUDIO, "text/plain", 415), (b"fake", "audio/webm", 415), (b"x" * (1024 * 1024 + 1), "audio/webm", 413)], ids=["empty", "unsupported", "spoofed", "oversized"])
+@pytest.mark.parametrize("data,mime,code", [(b"", "audio/webm", 422), (AUDIO, "text/plain", 415), (b"fake", "audio/webm", 415), (AUDIO, "video/webm", None), (AUDIO, "application/octet-stream", None), (b"x" * (1024 * 1024 + 1), "audio/webm", 413)], ids=["empty", "unsupported", "spoofed", "video-alias", "generic-container", "oversized"])
 def test_audio_validation(session, monkeypatch, data, mime, code):
     monkeypatch.setattr(get_settings(), "interview_audio_max_mb", 1)
-    assert upload(session, data, mime).status_code == code
-    assert not list(session.root.rglob("*.webm"))
+    response = upload(session, data, mime)
+    if code is None:
+        assert response.status_code == 200, response.text
+    else:
+        assert response.status_code == code
+    if code is not None:
+        assert not list(session.root.rglob("*.webm"))
 
 
 def test_transcription_failure_preserves_answer(session, monkeypatch):
@@ -136,6 +141,8 @@ def test_gemini_missing_configuration(monkeypatch):
     import asyncio
     from app.services.interview_audio import transcribe_audio
     monkeypatch.setattr(get_settings(), "gemini_api_key", "")
+    monkeypatch.setattr(get_settings(), "groq_api_key", "")
+    monkeypatch.setattr(get_settings(), "openai_api_key", "")
     with pytest.raises(HTTPException) as exc:
         asyncio.run(transcribe_audio(AUDIO, "audio/webm"))
     assert exc.value.status_code == 503

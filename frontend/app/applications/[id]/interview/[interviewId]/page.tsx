@@ -186,6 +186,14 @@ export default function InterviewReviewPage() {
                       <div className="min-w-0">
                         <p className="text-sm leading-6 text-slate-700">{evaluation.feedback}</p>
                         <p className="mt-2 text-xs text-slate-500">{evaluation.confidence_rationale}</p>
+                        {report?.per_question_analysis.find(q => q.answer_id === answer?.answer_id)?.speech_signals ? (
+                          <p className="mt-2 text-xs text-slate-500">
+                            Delivery: {report.per_question_analysis.find(q => q.answer_id === answer?.answer_id)?.speech_signals?.filler_count ?? 0} filler word(s), {report.per_question_analysis.find(q => q.answer_id === answer?.answer_id)?.speech_signals?.repeated_word_count ?? 0} repeated word(s), {report.per_question_analysis.find(q => q.answer_id === answer?.answer_id)?.speech_signals?.long_pause_count ?? 0} long pause(s)
+                            {report.per_question_analysis.find(q => q.answer_id === answer?.answer_id)?.speech_signals?.words_per_minute
+                              ? `, ${report.per_question_analysis.find(q => q.answer_id === answer?.answer_id)?.speech_signals?.words_per_minute} words/min`
+                              : ""}.
+                          </p>
+                        ) : null}
                         {evaluation.strengths.length ? (
                           <p className="mt-3 text-sm text-slate-700">
                             <span className="font-semibold text-emerald-700">Strengths:</span> {evaluation.strengths.join(" ")}
@@ -229,6 +237,7 @@ function VisualAnalysisSection({ analysis, completed }: { analysis: VisualAnalys
     { label: "Presentation", value: analysis.presentation },
     { label: "Eye contact", value: analysis.eye_contact_rate * 100 },
     { label: "Visible on camera", value: analysis.face_visible_rate * 100 },
+    { label: "Visible tension indicator", value: analysis.visible_tension },
   ];
   return (
     <section className="rounded-card border border-line bg-white p-5">
@@ -261,7 +270,7 @@ function VisualAnalysisSection({ analysis, completed }: { analysis: VisualAnalys
           ) : null}
           {analysis.observations.length ? (
             <ul className="mt-4 space-y-1.5 text-sm text-slate-600">
-              {analysis.observations.map((observation) => (
+            {analysis.observations.map((observation) => (
                 <li key={observation}>• {observation}</li>
               ))}
             </ul>

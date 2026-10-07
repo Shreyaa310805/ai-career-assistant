@@ -143,14 +143,14 @@ def test_visual_score_generated_from_analyzed_frames(video):
     assert visual["frames_analyzed"] == 3
     assert visual["face_visible_rate"] == pytest.approx(0.667, abs=0.001)
     assert visual["eye_contact_rate"] == 0.5
-    assert visual["engagement"] == pytest.approx(46.7, abs=0.1)
-    # 0.25*46.67 + 0.2*40 + 0.2*53.33 + 0.15*33.33 + 0.1*50 + 0.1*66.67
-    assert visual["visual_score"] == 47
+    assert visual["engagement"] == pytest.approx(38.3, abs=0.1)
+    # Looking away now caps engagement/attentiveness before aggregation.
+    assert visual["visual_score"] == 44
     assert "neutral" in visual["common_expressions"]
     full = client.get(video.base + "/full", headers=video.headers).json()["data"]
     assert full["visual_analysis"] == visual
     history = client.get("/api/v1/interviews", headers=video.headers).json()["data"]["items"]
-    assert next(i for i in history if i["interview_id"] == video.data["interview_id"])["visual_score"] == 47
+    assert next(i for i in history if i["interview_id"] == video.data["interview_id"])["visual_score"] == 44
 
 
 def test_video_completion_without_frames_has_no_visual_score(video):
@@ -172,6 +172,7 @@ def test_analyze_frame_requires_configuration(monkeypatch):
     from app.core.config import get_settings
     from app.services.interview_visual import analyze_frame
     monkeypatch.setattr(get_settings(), "gemini_api_key", "")
+    monkeypatch.setattr(get_settings(), "groq_api_key", "")
     with pytest.raises(HTTPException) as exc:
         asyncio.run(analyze_frame(JPEG))
     assert exc.value.status_code == 503
@@ -183,6 +184,7 @@ def test_analyze_frame_gemini_adapter(monkeypatch):
     from app.core.config import get_settings
     from app.services.interview_visual import analyze_frame
     monkeypatch.setattr(get_settings(), "gemini_api_key", "test-key")
+    monkeypatch.setattr(get_settings(), "groq_api_key", "")
     monkeypatch.setattr(get_settings(), "gemini_vision_model", "test-vision-model")
     calls = []
     def generate(**kwargs):

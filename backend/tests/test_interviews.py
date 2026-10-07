@@ -743,6 +743,14 @@ def test_heuristic_confidence_penalizes_hedge_words():
     assert decisive.confidence_score > hedged.confidence_score
 
 
+def test_heuristic_confidence_penalizes_filler_and_repeated_words():
+    from app.services.resumes.gemini_service import heuristic_confidence
+    clean, _ = heuristic_confidence(answer_text="I would profile the endpoint and add caching.", duration_seconds=10)
+    hesitant, rationale = heuristic_confidence(answer_text="Um, um, I I would maybe add caching, uh.", duration_seconds=10)
+    assert clean > hesitant
+    assert "filler" in rationale
+
+
 def test_heuristic_confidence_uses_duration_seconds():
     text = ("I reproduced the failing case, traced the values, found the invalid assumption, and fixed it with a "
             "validated fallback.")
