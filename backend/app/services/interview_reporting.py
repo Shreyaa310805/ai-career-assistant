@@ -1,6 +1,7 @@
 """Read-only deterministic reports over canonical persisted interview evidence."""
 from collections import Counter
 from datetime import datetime, timezone
+from urllib.parse import quote_plus
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -88,12 +89,19 @@ def interview_skill_recommendations(skill_evidence):
         skill = item["skill"]
         score = float(item["score"])
         resources = _INTERVIEW_SKILL_RESOURCES.get(skill.casefold())
+        resources = list(resources) if resources else []
         if not resources:
-            query = skill.strip().replace(" ", "+")
-            resources = [{
+            query = quote_plus(skill.strip())
+            resources.append({
                 "title": f"Practice {skill}", "provider": "Web search", "difficulty": "intermediate", "type": "practice",
                 "url": f"https://www.google.com/search?q={query}+interview+practice",
-            }]
+            })
+        query = quote_plus(f"{skill.strip()} tutorial")
+        resources.append({
+            "title": f"Popular YouTube tutorials: {skill.strip()}", "provider": "YouTube",
+            "difficulty": "beginner", "type": "video",
+            "url": f"https://www.youtube.com/results?search_query={query}",
+        })
         recommendations.append({
             "skill": skill,
             "priority": "High" if score < 50 else "Medium",

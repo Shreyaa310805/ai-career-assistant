@@ -1,4 +1,5 @@
 from uuid import UUID
+from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -112,18 +113,22 @@ _LEARNING_CATALOG: dict[str, list[dict[str, str]]] = {
 def _learning_resources(skill: str) -> list[dict[str, str]]:
     """Return a useful, stable starting point without calling an external API."""
     curated = _LEARNING_CATALOG.get(skill.strip().lower())
-    if curated:
-        return curated
-    query = skill.strip().replace(" ", "+")
-    return [
-        {
-            "title": f"Learn {skill.strip()}",
-            "provider": "Web search",
-            "difficulty": "beginner",
-            "type": "documentation",
-            "url": f"https://www.google.com/search?q={query}+official+documentation",
-        }
-    ]
+    resources = list(curated) if curated else [{
+        "title": f"Learn {skill.strip()}",
+        "provider": "Google",
+        "difficulty": "beginner",
+        "type": "tutorial",
+        "url": f"https://www.google.com/search?q={quote_plus(skill.strip())}",
+    }]
+    query = quote_plus(f"{skill.strip()} tutorial")
+    resources.append({
+        "title": f"Popular YouTube tutorials: {skill.strip()}",
+        "provider": "YouTube",
+        "difficulty": "beginner",
+        "type": "video",
+        "url": f"https://www.youtube.com/results?search_query={query}",
+    })
+    return resources
 
 
 async def _load_career_data(application_id: UUID, current_user: PremiumUser, application_db: DbSession, resume_db: AsyncSession):
