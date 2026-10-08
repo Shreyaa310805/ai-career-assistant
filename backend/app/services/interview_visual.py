@@ -6,6 +6,7 @@ without a vision model, so an unconfigured provider yields no score at all.
 """
 import asyncio
 import json
+import logging
 from collections import Counter
 
 from fastapi import HTTPException, UploadFile
@@ -13,6 +14,9 @@ from fastapi import HTTPException, UploadFile
 from app.core.config import get_settings
 from app.models.interview import InterviewVisualFrame
 from app.schemas.interview import GeneratedFrameAnalysis, VisualAnalysisData
+from app.services.groq_client import analyze_image as groq_analyze_image
+
+logger = logging.getLogger(__name__)
 
 MAX_FRAME_BYTES = 1024 * 1024
 MAX_FRAMES_PER_INTERVIEW = 60
@@ -55,29 +59,37 @@ async def read_frame(frame: UploadFile) -> bytes:
 
 async def analyze_frame(data: bytes) -> GeneratedFrameAnalysis:
     settings = get_settings()
-    if not settings.gemini_enabled:
+    if not settings.gemini_enabled and not settings.groq_api_key:
         raise HTTPException(503, "Visual analysis is not configured")
-    try:
-        from google import genai
-        from google.genai import types
-    except ImportError as exc:
-        raise HTTPException(503, "Visual analysis dependency is not installed") from exc
+    failures = []
+    if settings.groq_api_key:
+        try:
+            result = await groq_analyze_image(data, FRAME_PROMPT, settings.groq_api_key, settings.groq_vision_model)
+            return GeneratedFrameAnalysis.model_validate(json.loads(result))
+        except Exception as exc:
+            failures.append(exc)
+            logger.warning("Groq frame analysis failed; trying Gemini (%s)", type(exc).__name__)
+    if settings.gemini_enabled:
+        try:
+            from google import genai
+            from google.genai import types
 
-    def generate() -> GeneratedFrameAnalysis:
-        client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=30000))
-        response = client.models.generate_content(
-            model=settings.gemini_vision_model or settings.gemini_model,
-            contents=[types.Part.from_bytes(data=data, mime_type="image/jpeg"), FRAME_PROMPT],
-            config=types.GenerateContentConfig(
-                temperature=0, response_mime_type="application/json", response_schema=GeneratedFrameAnalysis,
-            ),
-        )
-        return GeneratedFrameAnalysis.model_validate(json.loads(response.text))
+            def generate() -> GeneratedFrameAnalysis:
+                client = genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(timeout=30000))
+                response = client.models.generate_content(
+                    model=settings.gemini_vision_model or settings.gemini_model,
+                    contents=[types.Part.from_bytes(data=data, mime_type="image/jpeg"), FRAME_PROMPT],
+                    config=types.GenerateContentConfig(
+                        temperature=0, response_mime_type="application/json", response_schema=GeneratedFrameAnalysis,
+                    ),
+                )
+                return GeneratedFrameAnalysis.model_validate(json.loads(response.text))
 
-    try:
-        return await asyncio.wait_for(asyncio.to_thread(generate), timeout=35)
-    except Exception as exc:
-        raise HTTPException(502, "Frame analysis failed") from exc
+            return await asyncio.wait_for(asyncio.to_thread(generate), timeout=35)
+        except Exception as exc:
+            failures.append(exc)
+            logger.warning("Gemini frame analysis failed (%s)", type(exc).__name__)
+    raise HTTPException(502, "Frame analysis failed") from (failures[-1] if failures else None)
 
 
 def aggregate_visual_analysis(frames: list[InterviewVisualFrame]) -> VisualAnalysisData | None:

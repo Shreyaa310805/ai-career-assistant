@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.6-flash"
     gemini_transcription_model: str = ""
     gemini_vision_model: str = ""
+    groq_api_key: str = ""
+    groq_transcription_model: str = "whisper-large-v3-turbo"
+    groq_vision_model: str = "qwen/qwen3.8-27b"
     interview_audio_max_mb: int = 10
     storage_backend: str = "local"
     storage_local_dir: str = "./storage"

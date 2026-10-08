@@ -209,58 +209,282 @@ def application_report(application, db):
 
 
 def report_pdf(report):
-    """Use existing PyMuPDF, wrap text and paginate without writing files."""
+    """Build a paginated, reader-friendly interview report with native PDF charts."""
     import fitz
-    from textwrap import wrap
-    doc = fitz.open()
-    page = None
-    y = 800
 
-    def write(text, size=11):
+    doc = fitz.open()
+    width, height = 595, 842
+    margin = 42
+    ink = (0.12, 0.16, 0.24)
+    muted = (0.39, 0.44, 0.53)
+    brand = (0.29, 0.27, 0.88)
+    brand_light = (0.93, 0.93, 1.0)
+    line = (0.87, 0.89, 0.92)
+    green = (0.12, 0.55, 0.38)
+    amber = (0.72, 0.43, 0.08)
+    red = (0.72, 0.22, 0.25)
+    page = None
+    y = 0
+
+    def new_page():
         nonlocal page, y
-        for paragraph in str(text).splitlines() or [""]:
-            for line in wrap(paragraph, width=85 if size == 11 else 65, break_long_words=True) or [""]:
-                if y + size * 1.5 > 780:
-                    page = doc.new_page(width=595, height=842)
-                    y = 45
-                page.insert_text((40, y), line, fontsize=size)
-                y += size * 1.5
+        page = doc.new_page(width=width, height=height)
+        page.draw_rect(fitz.Rect(0, 0, width, height), color=None, fill=(1, 1, 1))
+        page.draw_rect(fitz.Rect(0, 0, width, 7), color=None, fill=brand)
+        page.insert_text((margin, 31), "SKILLSYNC  /  INTERVIEW REPORT", fontsize=8,
+                         fontname="hebo", color=muted)
+        y = 55
+
+    def ensure_space(amount):
+        nonlocal y
+        if page is None:
+            new_page()
+        if y + amount > height - 52:
+            new_page()
+
+    def write(text, size=9.5, color=ink, bold=False, italic=False, indent=0, after=5):
+        nonlocal y
+        font = "hebo" if bold else "heit" if italic else "helv"
+        available = width - margin * 2 - indent
+        line_height = size * 1.45
+        paragraphs = str(text or "").splitlines() or [""]
+        for paragraph in paragraphs:
+            words = paragraph.split()
+            lines = []
+            current = ""
+            for word in words:
+                candidate = f"{current} {word}".strip()
+                if current and fitz.get_text_length(candidate, fontname=font, fontsize=size) > available:
+                    lines.append(current)
+                    current = word
+                else:
+                    current = candidate
+            lines.append(current)
+            for text_line in lines:
+                ensure_space(line_height)
+                page.insert_text((margin + indent, y + size), text_line, fontsize=size,
+                                 fontname=font, color=color)
+                y += line_height
+        y += after
+
+    def section(title):
+        nonlocal y
+        ensure_space(34)
+        rect = fitz.Rect(margin, y, width - margin, y + 25)
+        page.draw_rect(rect, color=None, fill=brand_light)
+        page.insert_text((margin + 10, y + 17), title, fontsize=10,
+                         fontname="hebo", color=brand)
+        y += 34
+
+    def score_color(value):
+        return green if value >= 75 else amber if value >= 50 else red
+
+    def bars(title, rows):
+        nonlocal y
+        section(title)
+        label_width = 130
+        bar_x = margin + label_width
+        bar_width = width - margin * 2 - label_width - 48
+        for label, value in rows:
+            ensure_space(27)
+            page.insert_text((margin, y + 10), label, fontsize=8.5, fontname="helv", color=ink)
+            track = fitz.Rect(bar_x, y + 1, bar_x + bar_width, y + 11)
+            page.draw_rect(track, color=None, fill=(0.93, 0.94, 0.96))
+            if value is not None:
+                score = max(0.0, min(100.0, float(value)))
+                filled = fitz.Rect(bar_x, y + 1, bar_x + bar_width * score / 100, y + 11)
+                page.draw_rect(filled, color=None, fill=score_color(score))
+                page.insert_text((bar_x + bar_width + 8, y + 10), f"{score:.0f}", fontsize=8,
+                                 fontname="hebo", color=ink)
+            else:
+                page.insert_text((bar_x + bar_width + 5, y + 10), "N/A", fontsize=7.5,
+                                 fontname="helv", color=muted)
+            y += 25
         y += 5
 
-    write("SkillSync - Application Interview Report", 16)
-    write(f"{report['company']} | {report['role']}\nReport date: {report['generated_at'].isoformat()}")
-    write(f"{report['completed_session_count']} completed sessions | {report['total_questions_attempted']} attempted | {report['total_questions_evaluated']} evaluated")
-    write(f"Overall: {report['metrics']['overall_score']} | Readiness: {report['readiness']}")
-    for name, value in report['metrics'].items():
-        write(f"{name}: {value if value is not None else 'Not assessed'}")
-    for key in ('verbal_confidence', 'visual_confidence'):
-        write(f"{key}: {report[key]['score']} ({report[key]['status']})")
-    for session in report['sessions']:
-        write(f"Session {session['interview_id']}: {session['personality']} / {session['difficulty']} | {session['overall_score']} | {session['questions_attempted']} attempted | {session['completed_at']}")
-    for title, key in [('Strengths', 'strengths'), ('Areas to improve', 'areas_to_improve'), ('Recommended focus', 'recommended_focus_areas')]:
-        write(title, 14)
-        for value in report[key]:
-            write(value)
-    write('Skill evidence', 14)
-    for skill in report['skill_evidence']:
-        write(f"{skill['skill']}: {skill['status']} | {skill['score']}")
-    write('Interview improvement roadmap', 14)
-    for index, step in enumerate(report['interview_improvement_roadmap'], start=1):
-        score = f" | correctness: {step['score']}" if step['score'] is not None else ""
-        write(f"{index}. {step['focus']} ({step['priority']}){score}\n{step['reason']}")
-    write('Interview skill recommendations', 14)
-    for recommendation in report['interview_skill_recommendations']:
-        write(f"{recommendation['skill']} ({recommendation['priority']}) | score: {recommendation['score']}")
-        for resource in recommendation['resources']:
-            write(f"- {resource['title']} ({resource['provider']})")
-    write('Per-question evaluation', 14)
-    for q in report['per_question_analysis']:
-        write(f"Session {q['interview_id']} / Question {q['question_number']} ({q['answer_modality']}): {q['question']}")
-        write(f"Scores: {q['scores']}\n{q['feedback']}")
-        write('Strengths: ' + '; '.join(q['strengths']) + '\nImprove: ' + '; '.join(q['weaknesses']))
-        if q['visual_analysis']:
-            write('Video observations: ' + '; '.join(q['visual_analysis']['observations']))
-    write(report['summary'])
+    def trend_chart():
+        nonlocal y
+        questions = report.get("per_question_analysis", [])
+        valid = [q for q in questions if q.get("scores", {}).get("overall_score") is not None]
+        section("Score by question")
+        if not valid:
+            write("Scores will appear here after evaluated answers are available.", color=muted)
+            return
+        chart_height = 144
+        ensure_space(chart_height + 22)
+        left, top = margin + 35, y + 8
+        chart_width = width - margin * 2 - 55
+        plot_height = 102
+        for mark in (0, 50, 100):
+            line_y = top + plot_height * (100 - mark) / 100
+            page.draw_line((left, line_y), (left + chart_width, line_y), color=line, width=0.7)
+            page.insert_text((margin, line_y + 3), str(mark), fontsize=7, fontname="helv", color=muted)
+        session_order = {session.get("interview_id"): i + 1 for i, session in enumerate(report.get("sessions", []))}
+        points = []
+        for i, question in enumerate(valid):
+            x = left + (chart_width * i / max(len(valid) - 1, 1))
+            value = max(0.0, min(100.0, float(question["scores"]["overall_score"])))
+            point_y = top + plot_height * (100 - value) / 100
+            points.append((x, point_y))
+            if i:
+                page.draw_line(points[i - 1], points[i], color=brand, width=2)
+            page.draw_circle((x, point_y), 3, color=brand, fill=brand)
+            if len(valid) <= 12 or i % max(1, len(valid) // 8) == 0:
+                sid = session_order.get(question.get("interview_id"), 1)
+                label = f"S{sid} Q{question.get('question_number', i + 1)}"
+                page.insert_text((x - 14, top + plot_height + 16), label, fontsize=6.5,
+                                 fontname="helv", color=muted)
+        y += chart_height
+
+    def bullet(text, color=ink):
+        write(f"•  {text}", size=9, color=color, indent=4, after=3)
+
+    # Opening summary
+    new_page()
+    write("Interview performance", size=23, color=ink, bold=True, after=3)
+    write(f"{report.get('role', 'Role')}  |  {report.get('company', 'Company')}",
+          size=12, color=brand, bold=True, after=5)
+    generated = report.get("generated_at")
+    if generated:
+        if hasattr(generated, "strftime"):
+            generated = generated.strftime("%B %d, %Y")
+        else:
+            generated = str(generated)[:10]
+        write(f"Prepared {generated}", size=8.5, color=muted, after=14)
+
+    score = report.get("metrics", {}).get("overall_score")
+    card_gap = 8
+    card_width = (width - margin * 2 - card_gap * 3) / 4
+    cards = [
+        ("Overall score", f"{score:.0f} / 100" if score is not None else "Not assessed"),
+        ("Readiness", str(report.get("readiness", "Not assessed"))),
+        ("Sessions", str(report.get("completed_session_count", 0))),
+        ("Answers evaluated", str(report.get("total_questions_evaluated", 0))),
+    ]
+    ensure_space(64)
+    for index, (label, value) in enumerate(cards):
+        x = margin + index * (card_width + card_gap)
+        rect = fitz.Rect(x, y, x + card_width, y + 56)
+        page.draw_rect(rect, color=line, fill=(0.98, 0.985, 1), width=0.8)
+        page.insert_text((x + 9, y + 18), label, fontsize=7, fontname="helv", color=muted)
+        page.insert_textbox(fitz.Rect(x + 8, y + 25, x + card_width - 6, y + 49), value,
+                            fontsize=10 if index != 1 else 8.5, fontname="hebo", color=ink)
+    y += 72
+
+    metrics = report.get("metrics", {})
+    dimension_rows = [
+        ("Correctness", metrics.get("correctness_score")),
+        ("Relevance", metrics.get("relevance_score")),
+        ("Depth", metrics.get("depth_score")),
+        ("Clarity", metrics.get("clarity_score")),
+        ("Evidence", metrics.get("evidence_score")),
+        ("Language confidence", metrics.get("confidence_score")),
+    ]
+    bars("Average by dimension", dimension_rows)
+    confidence_rows = []
+    for key, label in (("verbal_confidence", "Verbal confidence"), ("visual_confidence", "On-camera presence")):
+        item = report.get(key, {})
+        confidence_rows.append((label, item.get("score")))
+    bars("Confidence and on-camera presence", confidence_rows)
+    trend_chart()
+
+    section("Your performance at a glance")
+    write(report.get("summary", "Your results are based on completed interview answers."), size=9.5, after=8)
+    if report.get("date_range", {}).get("from"):
+        start = str(report["date_range"]["from"])[:10]
+        end = str(report["date_range"].get("to") or report["date_range"]["from"])[:10]
+        write(f"Sessions covered: {start} to {end}", size=8.5, color=muted)
+
+    # Consolidated observations and practice plan
+    strengths = report.get("strengths", [])
+    improvements = report.get("areas_to_improve", [])
+    if strengths:
+        section("Strengths")
+        for item in strengths[:12]:
+            bullet(item, green)
+    if improvements:
+        section("Areas to work on")
+        for item in improvements[:12]:
+            bullet(item, amber)
+
+    roadmap = report.get("interview_improvement_roadmap", [])
+    if roadmap:
+        section("Your practice plan")
+        for index, step in enumerate(roadmap, start=1):
+            ensure_space(58)
+            page.draw_circle((margin + 9, y + 7), 9, color=brand_light, fill=brand_light)
+            page.insert_text((margin + 6, y + 10), str(index), fontsize=7.5, fontname="hebo", color=brand)
+            priority_color = red if step.get("priority") == "High" else amber
+            write(f"{step.get('focus', 'Practice area')}  ·  {step.get('priority', 'Medium')} priority", size=9.5,
+                  bold=True, color=priority_color, indent=26, after=2)
+            write(step.get("reason", ""), size=8.5, color=muted, indent=26, after=7)
+
+    evidence = [item for item in report.get("skill_evidence", []) if item.get("score") is not None]
+    if evidence:
+        bars("Skill evidence", [(item["skill"], item["score"]) for item in evidence[:12]])
+
+    recommendations = report.get("interview_skill_recommendations", [])
+    if recommendations:
+        section("Suggested learning resources")
+        for recommendation in recommendations:
+            write(f"{recommendation['skill']}  ·  {recommendation['priority']} priority", size=9.5,
+                  bold=True, after=2)
+            write(recommendation.get("reason", ""), size=8.5, color=muted, indent=8, after=3)
+            for resource in recommendation.get("resources", []):
+                ensure_space(18)
+                label = f"{resource.get('title', 'Open resource')}  ({resource.get('provider', 'Resource')})"
+                x = margin + 10
+                text_width = min(fitz.get_text_length(label, fontname="helv", fontsize=8.5), width - margin * 2 - 14)
+                page.insert_text((x, y + 9), label, fontsize=8.5, fontname="helv", color=brand)
+                if resource.get("url"):
+                    page.insert_link({"kind": fitz.LINK_URI,
+                                      "from": fitz.Rect(x, y, x + text_width, y + 13),
+                                      "uri": resource["url"]})
+                y += 15
+            y += 5
+
+    questions = report.get("per_question_analysis", [])
+    if questions:
+        section("Question-by-question feedback")
+        for q in questions:
+            ensure_space(34)
+            label = (f"Question {q.get('question_number', '?')}  ·  {q.get('topic', 'Interview')}  ·  "
+                     f"{q.get('answer_modality', 'text').title()}")
+            score_value = q.get("scores", {}).get("overall_score")
+            suffix = f"  ·  {score_value:.0f}/100" if score_value is not None else ""
+            rect = fitz.Rect(margin, y, width - margin, y + 22)
+            page.draw_rect(rect, color=None, fill=brand_light)
+            page.insert_text((margin + 8, y + 15), label + suffix, fontsize=8.5,
+                             fontname="hebo", color=brand)
+            y += 29
+            write(q.get("question", ""), size=9.5, bold=True, after=5)
+            if q.get("answer_text"):
+                write("Your answer", size=8, bold=True, color=muted, after=2)
+                write(q["answer_text"], size=8.5, color=ink, indent=8, after=5)
+            if q.get("feedback"):
+                write("Feedback", size=8, bold=True, color=muted, after=2)
+                write(q["feedback"], size=8.5, indent=8, after=5)
+            if q.get("confidence_rationale"):
+                write("Confidence: " + q["confidence_rationale"], size=8, color=muted, indent=8, after=4)
+            if q.get("strengths"):
+                write("Strengths: " + "; ".join(q["strengths"]), size=8.5, color=green, indent=8, after=3)
+            concerns = [*q.get("weaknesses", []), *q.get("missing_points", [])]
+            if concerns:
+                write("To improve: " + "; ".join(concerns), size=8.5, color=amber, indent=8, after=3)
+            if q.get("visual_analysis"):
+                observations = q["visual_analysis"].get("observations", [])
+                if observations:
+                    write("On-camera observations: " + "; ".join(observations), size=8, color=muted, indent=8, after=3)
+            y += 7
+
+    # Consistent footer and page numbering after all pages have been laid out.
+    total_pages = len(doc)
+    for number, current in enumerate(doc, start=1):
+        current.draw_line((margin, height - 36), (width - margin, height - 36), color=line, width=0.7)
+        current.insert_text((margin, height - 20), "SkillSync  ·  Interview results", fontsize=7.5,
+                            fontname="helv", color=muted)
+        current.insert_text((width - margin - 55, height - 20), f"Page {number} of {total_pages}",
+                            fontsize=7.5, fontname="helv", color=muted)
     result = doc.tobytes()
     doc.close()
     return result
