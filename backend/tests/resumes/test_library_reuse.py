@@ -193,7 +193,8 @@ async def test_other_users_cannot_see_or_reuse_a_resume(
             },
         )
         other.headers["Authorization"] = f"Bearer {registration.json()['access_token']}"
-        await other.post("/api/v1/billing/checkout", json={"plan": "PREMIUM"})
+        from tests.helpers import grant_premium
+        grant_premium(registration.json()["user"]["id"])
         other_app = await _new_application(other, "Rival", "Spy")
 
         library = (await other.get("/api/v1/resumes/library")).json()["data"]["resumes"]

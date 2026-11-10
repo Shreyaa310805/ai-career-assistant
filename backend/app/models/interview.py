@@ -15,6 +15,7 @@ class Interview(Base):
         Uuid(as_uuid=True), ForeignKey("applications.id", ondelete="CASCADE"), nullable=False, index=True
     )
     personality: Mapped[str] = mapped_column(String(30), nullable=False)
+    is_trial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     difficulty: Mapped[str] = mapped_column(String(20), nullable=False)
     question_target: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
     mode: Mapped[str] = mapped_column(String(10), nullable=False, default="text", server_default="text")
