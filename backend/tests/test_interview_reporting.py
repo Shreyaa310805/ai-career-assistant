@@ -40,6 +40,8 @@ def test_single_session_and_modalities(source, mode, visual):
     app_id = create_application(headers)
     interview_id = seed(app_id, source=source, mode=mode, visual=visual)
     report = client.get(f'/api/v1/applications/{app_id}/interview-report', headers=headers).json()['data']
+    assert report['candidate_name'] == 'Reporter'
+    assert report['role'] == 'Engineer' and report['company'] == 'Acme'
     assert report['completed_session_count'] == 1
     assert report['metrics']['overall_score'] == 80
     assert report['demonstrated_skills'] == ['API Design', 'Python']
@@ -73,7 +75,10 @@ def test_multiple_incomplete_unevaluated_and_skill_semantics():
     assert pdf.status_code == 200 and pdf.headers['content-type'] == 'application/pdf'
     assert 'attachment' in pdf.headers['content-disposition']
     with fitz.open(stream=pdf.content, filetype='pdf') as doc:
-        assert 'SkillSync' in doc[0].get_text()
+        first_page = doc[0].get_text()
+        assert 'SkillSync' in first_page
+        assert 'Candidate: Reporter' in first_page
+        assert 'Engineer | Acme' in first_page
 
 
 def test_not_assessed_empty_and_authorization():

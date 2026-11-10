@@ -30,7 +30,7 @@ export default function ApplicationReportPage() {
       <div className="space-y-4 p-6">
         {loading && <p role="status">Loading report…</p>}
         {error && <Alert>{error} <Button onClick={() => setReload(r => r + 1)}>Retry</Button></Alert>}
-        {!loading && report && <><h2 className="text-2xl font-semibold">{report.company} · {report.role}</h2>
+        {!loading && report && <>{report.candidate_name && <p className="text-lg font-semibold">Candidate: {report.candidate_name}</p>}<h2 className="text-2xl font-semibold">{report.company} · {report.role}</h2>
           <p className="text-slate-500">{report.completed_session_count} sessions · {report.total_questions_attempted} attempted · {report.total_questions_evaluated} evaluated</p>
           <p className="text-xl font-semibold text-brand-700">{report.readiness} · {score(report.metrics.overall_score)}</p>
           {report.date_range.from && <p className="text-sm text-slate-500">{new Date(report.date_range.from).toLocaleDateString()} – {new Date(report.date_range.to!).toLocaleDateString()}</p>}

@@ -9,7 +9,7 @@ type Question = {
   visual_analysis: { composure: number; observations: string[]; common_expressions: string[] } | null;
 };
 export type ApplicationInterviewReport = {
-  application_id: string; company: string; role: string; generated_at: string; completed_session_count: number;
+  application_id: string; candidate_name: string | null; company: string; role: string; generated_at: string; completed_session_count: number;
   total_questions_attempted: number; total_questions_evaluated: number; metrics: Record<string, number | null>;
   verbal_confidence: Confidence; visual_confidence: Confidence; readiness: string; summary: string;
   date_range: { from: string | null; to: string | null };

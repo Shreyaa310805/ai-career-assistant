@@ -191,7 +191,8 @@ def application_report(application, db):
     dates = [s["completed_at"] for s in sessions if s["completed_at"]]
     focus_areas = ranked([*weak, *gaps])[:12]
     return {
-        "application_id": str(application.id), "company": application.company, "role": application.role,
+        "application_id": str(application.id), "candidate_name": application.user.name if application.user else None,
+        "company": application.company, "role": application.role,
         "generated_at": datetime.now(timezone.utc), "completed_session_count": len(sessions),
         "total_questions_attempted": sum(s["questions_attempted"] for s in sessions), "total_questions_evaluated": sum(s["questions_evaluated"] for s in sessions),
         "date_range": {"from": min(dates) if dates else None, "to": max(dates) if dates else None},
@@ -342,6 +343,9 @@ def report_pdf(report):
     # Opening summary
     new_page()
     write("Interview performance", size=23, color=ink, bold=True, after=3)
+    candidate_name = report.get("candidate_name")
+    if candidate_name and str(candidate_name).strip():
+        write(f"Candidate: {candidate_name}", size=12, color=ink, bold=True, after=3)
     write(f"{report.get('role', 'Role')}  |  {report.get('company', 'Company')}",
           size=12, color=brand, bold=True, after=5)
     generated = report.get("generated_at")
