@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AnalysisReport, type AnalysisView } from "@/components/analysis-report";
 import { AppShell } from "@/components/app-shell";
 import { ScanPanel } from "@/components/scan-panel";
@@ -10,6 +10,7 @@ import { Badge, Card, EmptyState, LinkButton, SectionHeading, Skeleton } from "@
 import { getCurrentUser, type User } from "@/lib/auth";
 import { getSummary, type Summary } from "@/lib/applications";
 import { analyzeQuickScan, getLatestQuickScan, uploadQuickResume } from "@/lib/quick-scan";
+import { getFreeInterviewStatus, type FreeInterviewStatus } from "@/lib/free-interview";
 import type { AnalyzeData } from "@/lib/resumes";
 
 export default function Dashboard() {
@@ -47,8 +48,14 @@ function FreeDashboard() {
   const [analysis, setAnalysis] = useState<AnalysisView | null>(null);
   const [loading, setLoading] = useState(true);
   const [resume, setResume] = useState<{ resume_id: string; version_number: number; skills: string[] } | null>(null);
+  const [freeInterview, setFreeInterview] = useState<FreeInterviewStatus | null>(null);
+
+  const refreshFreeInterviewStatus = useCallback(() => {
+    getFreeInterviewStatus().then(setFreeInterview).catch(() => setFreeInterview(null));
+  }, []);
 
   useEffect(() => {
+    refreshFreeInterviewStatus();
     getLatestQuickScan()
       .then((result) => {
         const { resume: latestResume, report } = result.data;
@@ -74,10 +81,11 @@ function FreeDashboard() {
       })
       .catch(() => undefined)
       .finally(() => setLoading(false));
-  }, []);
+  }, [refreshFreeInterviewStatus]);
 
   function onAnalyzed(data: AnalyzeData) {
     setAnalysis(data);
+    refreshFreeInterviewStatus();
     // Bring the freshly rendered result into view rather than leaving the
     // reader at the top of the form.
     requestAnimationFrame(() => document.getElementById("result")?.scrollIntoView({ behavior: "smooth" }));
@@ -103,6 +111,7 @@ function FreeDashboard() {
             analyze={analyzeQuickScan}
             initialResume={resume}
             onAnalyzed={onAnalyzed}
+            onResumeUploaded={refreshFreeInterviewStatus}
           />
         )}
       </div>
@@ -115,6 +124,37 @@ function FreeDashboard() {
           </div>
         </section>
       ) : null}
+
+      <section className="mt-12">
+        <Card className="flex flex-wrap items-center justify-between gap-5 p-6 sm:p-7">
+          <div className="max-w-2xl">
+            <Badge tone="brand">Free interview</Badge>
+            <h2 className="mt-3 text-xl font-bold tracking-tight">Practice with three text questions</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              Try one short interview tailored to your resume and a role you choose. Get feedback on each answer.
+            </p>
+            {freeInterview?.session_id ? (
+              <p className="mt-3 text-sm text-slate-500">Your free interview is in progress. Continue it when you’re ready.</p>
+            ) : freeInterview?.trial_used ? (
+              <p className="mt-3 text-sm text-slate-500">You’ve used your free interview. Premium includes more interview practice and preparation.</p>
+            ) : freeInterview && !freeInterview.resume_available ? (
+              <p className="mt-3 text-sm text-slate-500">Upload your resume above to start the free interview.</p>
+            ) : !freeInterview ? (
+              <p className="mt-3 text-sm text-slate-500">Checking free interview availability…</p>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {freeInterview?.session_id ? (
+              <LinkButton href={`/free-interview/${freeInterview.session_id}`}>Continue interview</LinkButton>
+            ) : freeInterview?.available ? (
+              <LinkButton href="/free-interview">Start free interview</LinkButton>
+            ) : freeInterview?.trial_used ? (
+              <LinkButton href="/upgrade">Upgrade for more practice</LinkButton>
+            ) : null}
+            <LinkButton href="/upgrade" variant="secondary">Explore Premium</LinkButton>
+          </div>
+        </Card>
+      </section>
 
       <section className="mt-12">
         <div className="flex flex-wrap items-end justify-between gap-4">

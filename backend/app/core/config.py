@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
     frontend_origin: str = "http://localhost:3000"
+    billing_mode: str = "simulated"
     resume_database_url: str = "sqlite+aiosqlite:///./resume_ats.db"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.6-flash"
@@ -34,6 +35,8 @@ class Settings(BaseSettings):
     pro_monthly_interview_credits: int = Field(default=10, ge=1)
     pro_yearly_interview_credits: int = Field(default=120, ge=1)
     free_trial_question_limit: int = Field(default=3, ge=1)
+    razorpay_monthly_amount: int = Field(default=25000, ge=1)
+    razorpay_monthly_currency: str = "INR"
     storage_backend: str = "local"
     storage_local_dir: str = "./storage"
     supabase_url: str = ""

@@ -52,26 +52,30 @@ Errors: `409` duplicate email, `401` bad credentials or invalid/revoked token.
 
 ## Billing — `/billing`
 
-Razorpay subscription checkout. Only Razorpay TEST keys (`rzp_test_...`) are accepted. Prices are
-read from the configured Razorpay plans; checkout never accepts a client-supplied amount or grants
-Premium access by itself. Access is granted only after the backend verifies the callback and checks
-the captured payment against a paid provider invoice. **No card data is accepted, transmitted or stored.**
+Billing uses `BILLING_MODE=simulated` by default for local development. Simulated checkout records a
+clearly labeled mock payment and grants Premium in the local database; it never calls Razorpay. Set
+`BILLING_MODE=razorpay` with Razorpay TEST keys (`rzp_test_...`) while developing, or LIVE keys
+(`rzp_live_...`) when you are ready to accept real payments. Use matching plan IDs for the selected
+Razorpay account. In Razorpay mode, prices are read
+from provider plans and access is granted only after the backend verifies the callback and captured
+payment against a paid invoice. **No card data is accepted, transmitted or stored by this app.**
 
 | Method | Path | Access | Request | Response |
 | --- | --- | --- | --- | --- |
 | GET | `/billing/catalog` | User | — | `200` configured monthly/yearly plans and allowances |
 | GET | `/billing/plan` | User | — | `200` plan, subscription status, expiry, credits, and legacy payment history |
 | GET | `/billing/payments` | User | — | `200` latest 100 verified payment records |
-| POST | `/billing/checkout` | User | `{plan: "PREMIUM", interval?: "monthly" | "yearly"}` | `201` Razorpay key, subscription ID, amount, currency |
+| POST | `/billing/checkout` | User | `{plan: "PREMIUM", interval?: "monthly" | "yearly"}` | `201` simulated result or Razorpay subscription details, depending on `BILLING_MODE` |
 | POST | `/billing/verify` | User | Razorpay subscription/payment/signature callback | `200` current plan details |
 | POST | `/billing/sync` | User | — | `200` provider-reconciled plan details |
 | POST | `/billing/cancel` | User | — | `200` current plan details |
 | POST | `/billing/webhook` | Razorpay signature header | signed provider event | `200` `{received: true}` |
 
-Checkout reuses the caller's unfinished subscription and does not grant Premium. A missing TEST
-configuration or plan returns `503`; buying `FREE` returns `422`. `/verify` checks ownership,
-Razorpay's callback signature, captured payment state, and the paid invoice. Webhooks are separately
-signature-verified; payment IDs are recorded once so retries do not duplicate the payment ledger.
+In simulated mode, checkout grants local Premium and marks the ledger provider as `simulated`. In
+Razorpay mode, checkout reuses the caller's unfinished subscription and does not grant Premium. A
+missing Razorpay configuration or plan returns `503`; buying `FREE` returns `422`. `/verify` checks
+ownership, Razorpay's callback signature, captured payment state, and the paid invoice. Webhooks are
+separately signature-verified; payment IDs are recorded once so retries do not duplicate the ledger.
 `/sync` provides authenticated recovery if a checkout callback or webhook is delayed. Existing
 one-time Premium accounts remain Premium and receive the configured initial allowance during
 migration; accounts without a subscription expiry retain their legacy access.

@@ -11,9 +11,9 @@ and a dedicated workspace per role: resume versions, skill gap, roadmap, what-if
 - Signup, login, JWT bearer authentication, logout/revocation
 - **Free tier** — resume upload, job-description upload or paste, ATS score with its six named
   sub-components, skill matching and improvement suggestions, with no application required
-- **Razorpay subscription backend** — TEST-mode plans, signed payment verification, subscription
-  reconciliation, cancellation, webhook processing, and a verified payment ledger. Hosted checkout UI
-  is being integrated separately; no mock payment can grant Premium access.
+- **Billing** — simulated checkout is enabled by default for local development. Razorpay subscriptions
+  support TEST mode during development and LIVE mode for real payments, with signed verification,
+  reconciliation, cancellation, webhooks, and a verified payment ledger via `BILLING_MODE=razorpay`.
 - **Premium** — ownership-protected application tracker (company, role, job description, application date,
   status), a per-application workspace, and career intelligence derived from stored ATS reports
 - PDF and DOCX text extraction (TXT also accepted for job descriptions)
@@ -93,14 +93,16 @@ Copy `.env.example` to `.env`; never commit `.env`, credentials, databases, uplo
 - `DATABASE_URL`: synchronous database for users, applications and payments
 - `RESUME_DATABASE_URL`: async database for resume records; defaults to local SQLite for development
 - `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`: token settings
+- `BILLING_MODE`: `simulated` for local mock checkout, or `razorpay` for Razorpay test/live checkout
 - `FRONTEND_ORIGIN`: allowed browser origin
 - `NEXT_PUBLIC_API_URL`: frontend API base URL — the only API base the frontend uses
 - `GEMINI_API_KEY`, `GEMINI_MODEL`: optional structured resume/JD parsing
 - `STORAGE_BACKEND`, `STORAGE_LOCAL_DIR`: private local storage or configured provider selection
 - `MAX_UPLOAD_MB`: resume/JD upload size limit
-- `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`: Razorpay TEST credentials (`rzp_test_` key IDs only)
+- `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`: matching Razorpay test (`rzp_test_`) or live (`rzp_live_`) credentials
 - `RAZORPAY_MONTHLY_PLAN_ID` or `RAZORPAY_PLAN_ID`, `RAZORPAY_YEARLY_PLAN_ID`: provider-created plan IDs
 - `RAZORPAY_WEBHOOK_SECRET`: optional secret configured for the public subscription webhook
+- `RAZORPAY_MONTHLY_AMOUNT`, `RAZORPAY_MONTHLY_CURRENCY`: expected monthly Premium plan price (₹250 / `25000` paise, `INR`); the Razorpay Dashboard plan must match
 - `PRO_MONTHLY_INTERVIEW_CREDITS`, `PRO_YEARLY_INTERVIEW_CREDITS`, `FREE_TRIAL_QUESTION_LIMIT`: entitlement defaults
 
 The default parser works without Gemini. Supabase and Cloudinary adapters are configuration points and must
@@ -139,8 +141,7 @@ run `npm run build` before review. Keep migrations, API contracts and frontend t
 
 Known limitations:
 
-- The billing backend currently accepts TEST credentials only. Hosted Checkout and public webhook delivery
-  have not been exercised end-to-end; the frontend upgrade flow still needs the next integration phase.
+- Razorpay supports test and live credentials. Public webhook delivery has not been exercised end-to-end.
 - Interview preparation is not implemented.
 - Years of experience are estimated by regex over phrases like "5+ years", so a resume that never states a
   total will score 0 on the experience component of the match.

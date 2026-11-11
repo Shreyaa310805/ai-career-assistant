@@ -1,4 +1,4 @@
-"""Razorpay TEST-mode transport and signature verification."""
+"""Razorpay transport and signature verification."""
 import hashlib
 import hmac
 import re
@@ -11,12 +11,13 @@ from app.core.config import get_settings
 
 def configured() -> bool:
     settings = get_settings()
-    return settings.razorpay_key_id.startswith("rzp_test_") and bool(settings.razorpay_key_secret)
+    supported_key = settings.razorpay_key_id.startswith(("rzp_test_", "rzp_live_"))
+    return supported_key and bool(settings.razorpay_key_secret)
 
 
 def api(method: str, path: str, payload: dict | None = None) -> dict:
     if not configured():
-        raise HTTPException(503, "Configure Razorpay TEST credentials on the backend")
+        raise HTTPException(503, "Configure valid Razorpay test or live credentials on the backend")
     settings = get_settings()
     try:
         response = httpx.request(

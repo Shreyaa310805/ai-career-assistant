@@ -6,10 +6,11 @@ from pydantic import BaseModel, ConfigDict
 
 from app.models.payment import PaymentStatus
 from app.models.user import Plan
+from app.schemas.auth import UserResponse
 
 BillingInterval = Literal["monthly", "yearly"]
-PREMIUM_PRICE_CENTS = 1900  # Legacy response field; checkout amounts come from Razorpay.
-PREMIUM_CURRENCY = "USD"  # Legacy response field; checkout currency comes from Razorpay.
+PREMIUM_PRICE_CENTS = 25000  # INR paise; Razorpay checkout prices come from the provider plan.
+PREMIUM_CURRENCY = "INR"
 
 
 class CheckoutRequest(BaseModel):
@@ -30,6 +31,8 @@ class PaymentResponse(BaseModel):
 
 class CheckoutResponse(BaseModel):
     already_premium: bool
+    user: UserResponse | None = None
+    payment: PaymentResponse | None = None
     key_id: str | None = None
     subscription_id: str | None = None
     amount: int | None = None
@@ -41,7 +44,7 @@ class PlanResponse(BaseModel):
     premium_since: datetime | None
     price_cents: int = PREMIUM_PRICE_CENTS
     currency: str = PREMIUM_CURRENCY
-    provider: Literal["razorpay"] = "razorpay"
+    provider: Literal["razorpay", "simulated"] = "razorpay"
     payments: list[PaymentResponse]
     credits: int
     credit_limit: int
@@ -53,5 +56,5 @@ class PlanResponse(BaseModel):
     subscription_status: str | None
     cancel_at_cycle_end: bool
     webhook_configured: bool
-    test_mode: bool = True
+    test_mode: bool = False
     configured: bool

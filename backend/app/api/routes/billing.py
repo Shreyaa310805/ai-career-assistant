@@ -49,14 +49,30 @@ def plan_data(db, user: User):
         "subscription_status": subscription.status if subscription else None,
         "cancel_at_cycle_end": subscription.cancel_at_cycle_end if subscription else False,
         "webhook_configured": bool(settings.razorpay_webhook_secret),
-        "test_mode": True,
-        "configured": razorpay.configured(),
+        "test_mode": settings.razorpay_key_id.startswith("rzp_test_"),
+        "configured": settings.billing_mode == "simulated" or razorpay.configured(),
+        "provider": settings.billing_mode if settings.billing_mode == "simulated" else "razorpay",
     }
 
 
 @router.get("/catalog")
 def catalog(current_user: CurrentUser):
     settings = get_settings()
+    if settings.billing_mode == "simulated":
+        return {
+            "plans": [
+                {
+                    "interval": interval,
+                    "available": True,
+                    "credits": settings.interview_allowance(interval),
+                    "amount": settings.razorpay_monthly_amount,
+                    "currency": settings.razorpay_monthly_currency.upper(),
+                }
+                for interval in ("monthly", "yearly")
+            ],
+            "trial_question_limit": settings.free_trial_question_limit,
+        }
+
     plans = []
     for interval in ("monthly", "yearly"):
         plan_id = settings.provider_plan_id(interval)
@@ -66,6 +82,13 @@ def catalog(current_user: CurrentUser):
             entity = razorpay.api("GET", f"plans/{plan_id}")
             if entity.get("period") != interval or entity.get("interval") != 1:
                 item["available"] = False
+            elif interval == "monthly" and (
+                entity.get("item", {}).get("amount") != settings.razorpay_monthly_amount
+                or entity.get("item", {}).get("currency") != settings.razorpay_monthly_currency.upper()
+            ):
+                item["available"] = False
+                item["amount"] = settings.razorpay_monthly_amount
+                item["currency"] = settings.razorpay_monthly_currency.upper()
             else:
                 item.update(amount=entity["item"]["amount"], currency=entity["item"]["currency"])
         plans.append(item)
@@ -92,15 +115,41 @@ def checkout(payload: CheckoutRequest, db: DbSession, current_user: CurrentUser)
     user = lock_user(db, current_user.id)
     user = expire_access(db, user)
     if user.plan == Plan.PREMIUM:
-        return {"already_premium": True}
+        return {"already_premium": True, "user": user}
 
     settings = get_settings()
+    if settings.billing_mode == "simulated":
+        payment = Payment(
+            user_id=user.id,
+            plan=Plan.PREMIUM,
+            amount_cents=settings.razorpay_monthly_amount,
+            currency=settings.razorpay_monthly_currency.upper(),
+            provider="simulated",
+            status=PaymentStatus.SUCCEEDED,
+        )
+        user.plan = Plan.PREMIUM
+        user.interview_credits = settings.interview_allowance(payload.interval)
+        user.pro_until = None
+        db.add(payment)
+        db.commit()
+        db.refresh(user)
+        db.refresh(payment)
+        return {"already_premium": False, "user": user, "payment": payment}
+
+    if settings.billing_mode != "razorpay":
+        raise HTTPException(503, "Billing mode is invalid. Set BILLING_MODE to simulated or razorpay.")
+
     plan_id = settings.provider_plan_id(payload.interval)
     if not plan_id:
         raise HTTPException(503, "This billing interval is not configured yet")
     plan = razorpay.api("GET", f"plans/{plan_id}")
     if plan.get("period") != payload.interval or plan.get("interval") != 1:
         raise HTTPException(503, "The Razorpay plan billing interval does not match configuration")
+    if payload.interval == "monthly" and (
+        plan.get("item", {}).get("amount") != settings.razorpay_monthly_amount
+        or plan.get("item", {}).get("currency") != settings.razorpay_monthly_currency.upper()
+    ):
+        raise HTTPException(503, "Create a Razorpay monthly plan for INR 250 and configure its plan ID")
 
     subscription = latest_subscription(db, user.id)
     if subscription:
@@ -214,9 +263,12 @@ async def webhook(request: Request, db: DbSession):
     try:
         event = json.loads(raw)
         event_type = event["event"]
-        subscription_id = event["payload"]["subscription"]["entity"]["id"]
     except (ValueError, KeyError, TypeError):
         raise HTTPException(400, "Malformed webhook")
+    try:
+        subscription_id = event["payload"]["subscription"]["entity"]["id"]
+    except (KeyError, TypeError):
+        return {"received": True}
     if event_type not in {
         "subscription.charged", "subscription.cancelled", "subscription.completed",
         "subscription.halted", "subscription.pending", "subscription.activated",

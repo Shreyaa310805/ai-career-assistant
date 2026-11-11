@@ -45,7 +45,7 @@ class InterviewCreateRequest(BaseModel):
     application_id: UUID
     personality: PersonalityEnum
     difficulty: DifficultyEnum
-    question_target: int = Field(default=5, ge=1, le=MAX_INTERVIEW_QUESTIONS)
+    question_target: int = Field(default=MAX_INTERVIEW_QUESTIONS, ge=MAX_INTERVIEW_QUESTIONS, le=MAX_INTERVIEW_QUESTIONS)
     mode: InterviewModeEnum = InterviewModeEnum.text
 
 

@@ -28,6 +28,7 @@ export function ScanPanel({
   initialJobDescription,
   initialResume,
   onAnalyzed,
+  onResumeUploaded,
 }: {
   upload: UploadFn;
   analyze: AnalyzeFn;
@@ -36,6 +37,7 @@ export function ScanPanel({
   initialJobDescription?: string | null;
   initialResume?: { resume_id: string; version_number: number; skills: string[] } | null;
   onAnalyzed: (data: AnalyzeData) => void;
+  onResumeUploaded?: () => void;
 }) {
   const [resume, setResume] = useState(initialResume ?? null);
   const [fileName, setFileName] = useState("");
@@ -72,6 +74,7 @@ export function ScanPanel({
         version_number: result.data.version_number,
         skills: result.data.parsed_data.skills,
       });
+      onResumeUploaded?.();
       setFileName("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to reuse that resume.");
@@ -92,6 +95,7 @@ export function ScanPanel({
         version_number: result.data.version_number,
         skills: result.data.parsed_data.skills,
       });
+      onResumeUploaded?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to read that resume.");
       setFileName("");

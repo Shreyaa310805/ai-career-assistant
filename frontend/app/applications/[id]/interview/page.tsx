@@ -14,7 +14,6 @@ import {
   type InterviewSummary,
 } from "@/lib/interviews";
 
-const QUESTION_COUNT_OPTIONS = Array.from({ length: MAX_INTERVIEW_QUESTIONS }, (_, index) => index + 1);
 
 const PERSONALITIES: Array<{ value: InterviewPersonality; label: string; description: string }> = [
   { value: "technical", label: "Technical", description: "Focus on role-specific skills and problem solving." },
@@ -46,7 +45,6 @@ export default function InterviewSetupPage() {
   const applicationId = params?.id;
   const [personality, setPersonality] = useState<InterviewPersonality>("technical");
   const [difficulty, setDifficulty] = useState<InterviewDifficulty>("medium");
-  const [questionTarget, setQuestionTarget] = useState(5);
   const [mode, setMode] = useState<InterviewMode>("text");
   const [error, setError] = useState("");
   const [isStarting, setIsStarting] = useState(false);
@@ -78,7 +76,7 @@ export default function InterviewSetupPage() {
     setError("");
     setIsStarting(true);
     try {
-      const response = await createInterview(applicationId, personality, difficulty, questionTarget, mode);
+      const response = await createInterview(applicationId, personality, difficulty, MAX_INTERVIEW_QUESTIONS, mode);
       if (!response.success || !response.data) {
         setError(response.error?.message ?? "Unable to create an interview session. Please try again.");
         return;
@@ -170,15 +168,7 @@ export default function InterviewSetupPage() {
               ))}
             </Select>
           </Field>
-          <Field label="Number of questions" hint={`Sessions can include up to ${MAX_INTERVIEW_QUESTIONS} questions.`}>
-            <Select value={questionTarget} onChange={(event) => setQuestionTarget(Number(event.target.value))}>
-              {QUESTION_COUNT_OPTIONS.map((count) => (
-                <option key={count} value={count}>
-                  {count} question{count === 1 ? "" : "s"}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          <p className="rounded-lg bg-surface-muted/60 px-4 py-3 text-sm text-slate-600">Premium interview sessions include {MAX_INTERVIEW_QUESTIONS} questions.</p>
           <div className="flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
             <p className="text-sm text-slate-500">This creates a saved interview session, then you can generate role-specific questions.</p>
             <Button size="lg" onClick={startInterview} disabled={isStarting || !applicationId}>
