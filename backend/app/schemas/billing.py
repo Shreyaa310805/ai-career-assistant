@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -7,19 +8,14 @@ from app.models.payment import PaymentStatus
 from app.models.user import Plan
 from app.schemas.auth import UserResponse
 
-# Simulated pricing. A real integration would read this from the processor.
-PREMIUM_PRICE_CENTS = 1900
-PREMIUM_CURRENCY = "USD"
+BillingInterval = Literal["monthly", "yearly"]
+PREMIUM_PRICE_CENTS = 25000  # INR paise; Razorpay checkout prices come from the provider plan.
+PREMIUM_CURRENCY = "INR"
 
 
 class CheckoutRequest(BaseModel):
-    """The plan the user is buying.
-
-    Only the target plan is accepted -- never a price, and never card data.
-    The server owns the amount and the resulting plan state.
-    """
-
     plan: Plan = Plan.PREMIUM
+    interval: BillingInterval = "monthly"
 
 
 class PaymentResponse(BaseModel):
@@ -34,9 +30,13 @@ class PaymentResponse(BaseModel):
 
 
 class CheckoutResponse(BaseModel):
-    user: UserResponse
-    payment: PaymentResponse | None
     already_premium: bool
+    user: UserResponse | None = None
+    payment: PaymentResponse | None = None
+    key_id: str | None = None
+    subscription_id: str | None = None
+    amount: int | None = None
+    currency: str | None = None
 
 
 class PlanResponse(BaseModel):
@@ -44,5 +44,17 @@ class PlanResponse(BaseModel):
     premium_since: datetime | None
     price_cents: int = PREMIUM_PRICE_CENTS
     currency: str = PREMIUM_CURRENCY
-    provider: str = "mock"
+    provider: Literal["razorpay", "simulated"] = "razorpay"
     payments: list[PaymentResponse]
+    credits: int
+    credit_limit: int
+    trial_available: bool
+    trial_question_limit: int
+    interval: BillingInterval
+    pro_until: datetime | None
+    subscription_id: str | None
+    subscription_status: str | None
+    cancel_at_cycle_end: bool
+    webhook_configured: bool
+    test_mode: bool = False
+    configured: bool

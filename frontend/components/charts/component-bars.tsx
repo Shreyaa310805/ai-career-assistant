@@ -29,7 +29,14 @@ export function toComponents(breakdown: Record<string, number> | null | undefine
     }));
 }
 
-export function ComponentBars({ components }: { components: ScoreComponent[] }) {
+export function ComponentBars({
+  components,
+  explanations,
+}: {
+  components: ScoreComponent[];
+  /** Resume-specific sentence per component key; falls back to the static hint. */
+  explanations?: Record<string, string> | null;
+}) {
   if (components.length === 0) {
     return (
       <p className="text-sm text-slate-500">
@@ -43,6 +50,7 @@ export function ComponentBars({ components }: { components: ScoreComponent[] }) 
       {components.map((component) => {
         const pct = component.available > 0 ? (component.earned / component.available) * 100 : 0;
         const hint = ATS_COMPONENT_MAX[component.key]?.hint;
+        const explanation = explanations?.[component.key];
         return (
           <li key={component.key}>
             <div className="flex items-baseline justify-between gap-4">
@@ -70,6 +78,7 @@ export function ComponentBars({ components }: { components: ScoreComponent[] }) 
                 }}
               />
             </div>
+            <p className="mt-1.5 text-xs leading-5 text-slate-500">{explanation ?? hint}</p>
           </li>
         );
       })}

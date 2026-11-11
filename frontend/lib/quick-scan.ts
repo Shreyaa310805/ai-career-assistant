@@ -29,6 +29,8 @@ export type QuickScanLatest = {
     improvement_suggestions: { category: string; action: string; impact: "High" | "Medium" | "Low" }[];
     ats_breakdown: Record<string, number> | null;
     match_breakdown: Record<string, number> | null;
+    ats_explanations?: Record<string, string> | null;
+    ats_summary?: string | null;
     created_at: string;
   } | null;
 };

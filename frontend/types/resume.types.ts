@@ -90,6 +90,9 @@ export interface AnalyzeResumeData {
   /** Optional and additive: null on reports created before breakdowns existed. */
   ats_breakdown: Record<string, number> | null;
   match_breakdown: Record<string, number> | null;
+  /** Resume-specific reason behind each ATS component, keyed like ats_breakdown. */
+  ats_explanations?: Record<string, string> | null;
+  ats_summary?: string | null;
 }
 
 export type AnalyzeResumeResponse = ApiResponse<AnalyzeResumeData>;
@@ -105,6 +108,8 @@ export interface LatestAtsSummary {
   created_at: string;
   ats_breakdown: Record<string, number> | null;
   match_breakdown: Record<string, number> | null;
+  ats_explanations?: Record<string, string> | null;
+  ats_summary?: string | null;
 }
 
 export interface ResumeVersionSummary {
@@ -177,6 +182,32 @@ export interface SelectBestData {
 export type SelectBestResponse = ApiResponse<SelectBestData>;
 
 /* -------------------------------------------------------------------------- */
+/* GET /api/v1/resumes/library, POST /api/v1/resumes/reuse (additive)         */
+/* -------------------------------------------------------------------------- */
+
+export interface LibraryResume {
+  resume_id: string;
+  application_id: string;
+  company: string;
+  role: string;
+  label: string;
+  is_quick_scan: boolean;
+  version_number: number;
+  created_at: string;
+  skills: string[];
+  experience_years: number;
+}
+
+export type ResumeLibraryResponse = ApiResponse<{ resumes: LibraryResume[] }>;
+
+export interface ReuseResumeRequest {
+  source_resume_id: string;
+  application_id: string;
+}
+
+export type ReuseResumeResponse = ApiResponse<UploadResumeData>;
+
+/* -------------------------------------------------------------------------- */
 /* Quick scan — the same pipeline without an application (FREE tier)          */
 /* -------------------------------------------------------------------------- */
 
@@ -196,6 +227,8 @@ export interface QuickScanLatestData {
     improvement_suggestions: ImprovementSuggestion[];
     ats_breakdown: Record<string, number> | null;
     match_breakdown: Record<string, number> | null;
+    ats_explanations?: Record<string, string> | null;
+    ats_summary?: string | null;
     created_at: string;
   } | null;
 }

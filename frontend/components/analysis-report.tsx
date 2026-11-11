@@ -13,6 +13,8 @@ export type AnalysisView = {
   missing_skills: string[];
   improvement_suggestions: ImprovementSuggestion[];
   ats_breakdown: Record<string, number> | null;
+  ats_explanations?: Record<string, string> | null;
+  ats_summary?: string | null;
   extra_skills?: string[];
 };
 
@@ -47,10 +49,14 @@ export function AnalysisReport({ analysis }: { analysis: AnalysisView }) {
           <Card className="p-6">
             <h3 className="text-[15px] font-semibold">Why this ATS score</h3>
             <p className="mt-1 text-sm text-slate-500">
-              Each check contributes a fixed number of points. The lighter track is what is still available.
+              {analysis.ats_summary ||
+                "Each check contributes a fixed number of points. The lighter track is what is still available."}
             </p>
             <div className="mt-5">
-              <ComponentBars components={toComponents(analysis.ats_breakdown)} />
+              <ComponentBars
+                components={toComponents(analysis.ats_breakdown)}
+                explanations={analysis.ats_explanations}
+              />
             </div>
           </Card>
 

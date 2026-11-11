@@ -26,7 +26,9 @@ from app.schemas.resume import (
 from app.services.resumes.ats_engine import (
     calculate_ats_score,
     calculate_match_score,
+    explain_ats_components,
     generate_suggestions,
+    summarize_ats_score,
 )
 from app.services.resumes.exceptions import (
     FileTooLargeError,
@@ -128,6 +130,10 @@ async def run_analysis(
         resume_parsed, jd_parsed
     )
     suggestions = generate_suggestions(resume_parsed, jd_parsed, missing_skills, ats_components)
+    ats_explanations = explain_ats_components(
+        resume.raw_text, resume_parsed, ats_components, jd_parsed, jd_content
+    )
+    ats_summary = summarize_ats_score(ats_components)
 
     report = AtsReport(
         resume_id=resume.id,
@@ -137,7 +143,12 @@ async def run_analysis(
         matched_skills=matched_skills,
         missing_skills=missing_skills,
         improvement_suggestions=[s.model_dump() for s in suggestions],
-        score_breakdown={"ats": ats_components, "match": match_components},
+        score_breakdown={
+            "ats": ats_components,
+            "match": match_components,
+            "ats_explanations": ats_explanations,
+            "ats_summary": ats_summary,
+        },
     )
     db.add(report)
     await db.commit()
@@ -155,6 +166,8 @@ async def run_analysis(
         jd_details=jd_parsed,
         ats_breakdown=ats_components,
         match_breakdown=match_components,
+        ats_explanations=ats_explanations,
+        ats_summary=ats_summary,
     )
     return report, payload
 

@@ -51,6 +51,10 @@ export type AnalyzeData = {
   /** Optional: absent on reports created before breakdowns were persisted. */
   ats_breakdown: Record<string, number> | null;
   match_breakdown: Record<string, number> | null;
+  /** Resume-specific reason behind each ATS component, keyed like ats_breakdown. */
+  ats_explanations?: Record<string, string> | null;
+  /** One-line headline: strongest check and where points are being lost. */
+  ats_summary?: string | null;
 };
 
 export type LatestAtsSummary = {
@@ -60,6 +64,8 @@ export type LatestAtsSummary = {
   created_at: string;
   ats_breakdown: Record<string, number> | null;
   match_breakdown: Record<string, number> | null;
+  ats_explanations?: Record<string, string> | null;
+  ats_summary?: string | null;
 };
 
 export type ResumeVersionSummary = {
@@ -91,6 +97,21 @@ export type CompareData = {
   diff: VersionDiff;
   recommended_version: "v1" | "v2" | "tie";
   recommendation_reason: string;
+};
+
+/** One entry in the caller's resume library (GET /resumes/library). */
+export type LibraryResume = {
+  resume_id: string;
+  application_id: string;
+  company: string;
+  role: string;
+  /** "Company — Role", or "Quick scan" for resumes uploaded outside an application. */
+  label: string;
+  is_quick_scan: boolean;
+  version_number: number;
+  created_at: string;
+  skills: string[];
+  experience_years: number;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -131,3 +152,14 @@ export const selectBestVersion = (applicationId: string, bestResumeId: string) =
     "/resumes/select-best",
     { method: "PATCH", body: JSON.stringify({ application_id: applicationId, best_resume_id: bestResumeId }) },
   );
+
+/** Every resume the user has uploaded, across applications and quick scans. */
+export const getResumeLibrary = () =>
+  authedRequest<Envelope<{ resumes: LibraryResume[] }>>("/resumes/library");
+
+/** Copy an existing resume into an application without re-uploading the file. */
+export const reuseResume = (sourceResumeId: string, applicationId: string) =>
+  authedRequest<Envelope<UploadData>>("/resumes/reuse", {
+    method: "POST",
+    body: JSON.stringify({ source_resume_id: sourceResumeId, application_id: applicationId }),
+  });

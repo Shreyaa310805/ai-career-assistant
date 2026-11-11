@@ -6,7 +6,7 @@ import { AnalysisReport, type AnalysisView } from "@/components/analysis-report"
 import { ScanPanel } from "@/components/scan-panel";
 import { Card, CardHeader, Skeleton } from "@/components/ui";
 import { getApplication, type Application } from "@/lib/applications";
-import { analyzeResume, getVersions, uploadResume, type AnalyzeData } from "@/lib/resumes";
+import { analyzeResume, getResumeLibrary, getVersions, reuseResume, uploadResume, type AnalyzeData } from "@/lib/resumes";
 
 export default function AtsPage() {
   const params = useParams<{ id: string }>();
@@ -41,6 +41,8 @@ export default function AtsPage() {
     [id],
   );
 
+  const reuse = useCallback((sourceResumeId: string) => reuseResume(sourceResumeId, id!), [id]);
+
   function onAnalyzed(data: AnalyzeData) {
     setAnalysis(data);
     requestAnimationFrame(() => document.getElementById("ats-result")?.scrollIntoView({ behavior: "smooth" }));
@@ -59,6 +61,8 @@ export default function AtsPage() {
           <ScanPanel
             upload={upload}
             analyze={analyze}
+            library={getResumeLibrary}
+            reuse={reuse}
             initialResume={resume}
             initialJobDescription={app?.job_description ?? null}
             onAnalyzed={onAnalyzed}

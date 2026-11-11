@@ -83,6 +83,11 @@ class SelectBestRequest(BaseModel):
     best_resume_id: str
 
 
+class ReuseResumeRequest(BaseModel):
+    source_resume_id: str
+    application_id: str
+
+
 # ---------------------------------------------------------------------------
 # Response payloads (the contents of the top-level "data" field)
 # ---------------------------------------------------------------------------
@@ -107,6 +112,10 @@ class AnalyzeResumeResponse(BaseModel):
     # computes. Existing consumers that ignore them are unaffected.
     ats_breakdown: dict[str, float] | None = None
     match_breakdown: dict[str, float] | None = None
+    # Additive: itemised, resume-specific reasons behind each ATS component and
+    # a one-line headline. None on reports saved before these existed.
+    ats_explanations: dict[str, str] | None = None
+    ats_summary: str | None = None
 
 
 class LatestAtsSummary(BaseModel):
@@ -116,6 +125,8 @@ class LatestAtsSummary(BaseModel):
     created_at: datetime
     ats_breakdown: dict[str, float] | None = None
     match_breakdown: dict[str, float] | None = None
+    ats_explanations: dict[str, str] | None = None
+    ats_summary: str | None = None
 
 
 class ResumeVersionSummary(BaseModel):
@@ -158,3 +169,21 @@ class SelectBestResponse(BaseModel):
     best_resume_id: str
     version_number: int
     updated_versions: int
+
+
+class ResumeLibraryItem(BaseModel):
+    resume_id: str
+    application_id: str
+    company: str
+    role: str
+    # "Company — Role", or "Quick scan" for resumes uploaded without an application.
+    label: str
+    is_quick_scan: bool
+    version_number: int
+    created_at: datetime
+    skills: list[str]
+    experience_years: float
+
+
+class ResumeLibraryResponse(BaseModel):
+    resumes: list[ResumeLibraryItem]

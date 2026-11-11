@@ -175,3 +175,81 @@ def test_match_skills_does_not_confuse_short_names():
     matched, missing = match_skills(resume_skills=["Go"], jd_skills=["R", "C#"])
     assert matched == []
     assert set(missing) == {"R", "C#"}
+
+
+# --------------------------------------------------------------------- #
+# Dynamic explanations
+# --------------------------------------------------------------------- #
+from app.services.resumes.ats_engine import explain_ats_components, summarize_ats_score  # noqa: E402
+
+
+def _explain(parsed, raw_text="Experience Education Skills"):
+    _score, components = calculate_ats_score(raw_text, parsed)
+    return explain_ats_components(raw_text, parsed, components), components
+
+
+def test_explanations_distinguish_missing_phone_from_missing_email():
+    no_phone, _ = _explain(ParsedResumeData(email="a@b.com"))
+    no_email, _ = _explain(ParsedResumeData(phone="555 123 4567"))
+    neither, _ = _explain(ParsedResumeData())
+    assert "no phone" in no_phone["contact_completeness"]
+    assert "no email" in no_email["contact_completeness"]
+    assert "Neither" in neither["contact_completeness"]
+
+
+def test_explanations_count_bullets_with_metrics():
+    parsed = ParsedResumeData(
+        work_history=[
+            WorkHistoryItem(
+                company="A",
+                role="Dev",
+                bullets=["Cut latency by 30%", "Served 2M users", "Wrote docs", "Mentored peers", "Ran demos"],
+            )
+        ]
+    )
+    explanations, _ = _explain(parsed)
+    assert explanations["quantified_impact"] == "2 of 5 bullets include a metric or number."
+
+
+def test_explanations_name_missing_sections_and_word_count():
+    explanations, _ = _explain(ParsedResumeData(), raw_text="Experience only here")
+    assert "1 of 3" in explanations["section_coverage"]
+    assert "Education" in explanations["section_coverage"]
+    assert "Skills" in explanations["section_coverage"]
+    assert "3 words" in explanations["length_check"]
+
+
+def test_explanations_report_jd_skill_overlap():
+    parsed = ParsedResumeData(skills=["Python", "Docker"])
+    jd = ParsedJDData(required_skills=["Python", "Docker", "AWS"], preferred_skills=["Kubernetes"])
+    _score, components = calculate_ats_score("Experience Education Skills", parsed, jd)
+    text = explain_ats_components("Experience Education Skills", parsed, components, jd)
+    assert text["skills_listed"].startswith("2 of 4 skills")
+
+
+def test_summary_names_strongest_check_and_biggest_leak():
+    components = {
+        "contact_completeness": 15.0,
+        "section_coverage": 20.0,
+        "skills_listed": 10.0,
+        "quantified_impact": 0.0,
+        "length_check": 15.0,
+        "work_history_structure": 15.0,
+    }
+    summary = summarize_ats_score(components)
+    assert "quantified impact" in summary
+    assert "0 of 20" in summary
+    assert "strongest" in summary
+
+
+def test_summary_handles_perfect_and_empty_scores():
+    perfect = {
+        "contact_completeness": 15.0,
+        "section_coverage": 20.0,
+        "skills_listed": 15.0,
+        "quantified_impact": 20.0,
+        "length_check": 15.0,
+        "work_history_structure": 15.0,
+    }
+    assert "full marks" in summarize_ats_score(perfect)
+    assert summarize_ats_score({}) == ""

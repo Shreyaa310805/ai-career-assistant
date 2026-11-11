@@ -1,11 +1,14 @@
 "use client";
 
-import { useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 import { Alert, Badge, Button, Card, Spinner, Textarea, cx } from "@/components/ui";
-import type { AnalyzeData, UploadData } from "@/lib/resumes";
+import type { AnalyzeData, LibraryResume, UploadData } from "@/lib/resumes";
 
 type UploadFn = (file: File) => Promise<{ data: UploadData }>;
 type AnalyzeFn = (resumeId: string, jd: { text?: string; file?: File }) => Promise<{ data: AnalyzeData }>;
+
+type LibraryFn = () => Promise<{ data: { resumes: LibraryResume[] } }>;
+type ReuseFn = (sourceResumeId: string) => Promise<{ data: UploadData }>;
 
 const RESUME_ACCEPT =
   ".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -14,20 +17,27 @@ const JD_ACCEPT = `${RESUME_ACCEPT},.txt,text/plain`;
 /**
  * Resume upload plus job-description input, driven by whichever pair of API
  * functions the caller passes: the quick-scan pair for FREE accounts, the
- * application-scoped pair inside a workspace.
+ * application-scoped pair inside a workspace. When `library` and `reuse` are
+ * both given, a previously uploaded resume can be picked instead of uploading.
  */
 export function ScanPanel({
   upload,
   analyze,
+  library,
+  reuse,
   initialJobDescription,
   initialResume,
   onAnalyzed,
+  onResumeUploaded,
 }: {
   upload: UploadFn;
   analyze: AnalyzeFn;
+  library?: LibraryFn;
+  reuse?: ReuseFn;
   initialJobDescription?: string | null;
   initialResume?: { resume_id: string; version_number: number; skills: string[] } | null;
   onAnalyzed: (data: AnalyzeData) => void;
+  onResumeUploaded?: () => void;
 }) {
   const [resume, setResume] = useState(initialResume ?? null);
   const [fileName, setFileName] = useState("");
@@ -37,6 +47,41 @@ export function ScanPanel({
   const [busy, setBusy] = useState<"upload" | "analyze" | null>(null);
   const [error, setError] = useState("");
   const resumeInput = useRef<HTMLInputElement>(null);
+  const [saved, setSaved] = useState<LibraryResume[]>([]);
+  const [savedId, setSavedId] = useState("");
+
+  useEffect(() => {
+    if (!library || !reuse) return;
+    let cancelled = false;
+    library()
+      .then((result) => {
+        if (!cancelled) setSaved(result.data.resumes);
+      })
+      .catch(() => undefined); // The picker is optional; uploading still works.
+    return () => {
+      cancelled = true;
+    };
+  }, [library, reuse]);
+
+  async function handleReuse() {
+    if (!reuse || !savedId) return;
+    setError("");
+    setBusy("upload");
+    try {
+      const result = await reuse(savedId);
+      setResume({
+        resume_id: result.data.resume_id,
+        version_number: result.data.version_number,
+        skills: result.data.parsed_data.skills,
+      });
+      onResumeUploaded?.();
+      setFileName("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to reuse that resume.");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
@@ -50,6 +95,7 @@ export function ScanPanel({
         version_number: result.data.version_number,
         skills: result.data.parsed_data.skills,
       });
+      onResumeUploaded?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to read that resume.");
       setFileName("");
@@ -129,6 +175,41 @@ export function ScanPanel({
             </p>
           ) : null}
         </div>
+
+        {reuse && library ? (
+          <div className="mt-4">
+            <label htmlFor="reuse-resume" className="text-xs font-medium text-slate-600">
+              Reuse a resume
+            </label>
+            <div className="mt-1.5 flex gap-2">
+              <select
+                id="reuse-resume"
+                value={savedId}
+                disabled={busy !== null || saved.length === 0}
+                onChange={(event) => setSavedId(event.target.value)}
+                className="min-w-0 flex-1 rounded-lg border border-line bg-white px-3 py-2 text-sm text-slate-700 disabled:opacity-60"
+              >
+                <option value="">
+                  {saved.length === 0 ? "No saved resumes yet" : "Choose a saved resume…"}
+                </option>
+                {saved.map((item) => (
+                  <option key={item.resume_id} value={item.resume_id}>
+                    {item.label} · v{item.version_number} · {new Date(item.created_at).toLocaleDateString()}
+                  </option>
+                ))}
+              </select>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={!savedId || busy !== null}
+                onClick={() => void handleReuse()}
+              >
+                Use
+              </Button>
+            </div>
+          </div>
+        ) : null}
 
         {resume ? (
           <div className="mt-4 rounded-lg bg-surface-muted p-4">

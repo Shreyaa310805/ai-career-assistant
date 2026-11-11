@@ -52,15 +52,33 @@ Errors: `409` duplicate email, `401` bad credentials or invalid/revoked token.
 
 ## Billing — `/billing`
 
-Simulated provider. **No card data is accepted, transmitted or stored.**
+Billing uses `BILLING_MODE=simulated` by default for local development. Simulated checkout records a
+clearly labeled mock payment and grants Premium in the local database; it never calls Razorpay. Set
+`BILLING_MODE=razorpay` with Razorpay TEST keys (`rzp_test_...`) while developing, or LIVE keys
+(`rzp_live_...`) when you are ready to accept real payments. Use matching plan IDs for the selected
+Razorpay account. In Razorpay mode, prices are read
+from provider plans and access is granted only after the backend verifies the callback and captured
+payment against a paid invoice. **No card data is accepted, transmitted or stored by this app.**
 
 | Method | Path | Access | Request | Response |
 | --- | --- | --- | --- | --- |
-| GET | `/billing/plan` | User | — | `200` `{plan, premium_since, price_cents, currency, provider, payments[]}` |
-| POST | `/billing/checkout` | User | `{plan: "PREMIUM"}` | `201` `{user, payment, already_premium}` |
+| GET | `/billing/catalog` | User | — | `200` configured monthly/yearly plans and allowances |
+| GET | `/billing/plan` | User | — | `200` plan, subscription status, expiry, credits, and legacy payment history |
+| GET | `/billing/payments` | User | — | `200` latest 100 verified payment records |
+| POST | `/billing/checkout` | User | `{plan: "PREMIUM", interval?: "monthly" | "yearly"}` | `201` simulated result or Razorpay subscription details, depending on `BILLING_MODE` |
+| POST | `/billing/verify` | User | Razorpay subscription/payment/signature callback | `200` current plan details |
+| POST | `/billing/sync` | User | — | `200` provider-reconciled plan details |
+| POST | `/billing/cancel` | User | — | `200` current plan details |
+| POST | `/billing/webhook` | Razorpay signature header | signed provider event | `200` `{received: true}` |
 
-`checkout` is idempotent: calling it on a PREMIUM account returns `already_premium: true` with
-`payment: null` and records no second transaction. Buying `FREE` returns `422`.
+In simulated mode, checkout grants local Premium and marks the ledger provider as `simulated`. In
+Razorpay mode, checkout reuses the caller's unfinished subscription and does not grant Premium. A
+missing Razorpay configuration or plan returns `503`; buying `FREE` returns `422`. `/verify` checks
+ownership, Razorpay's callback signature, captured payment state, and the paid invoice. Webhooks are
+separately signature-verified; payment IDs are recorded once so retries do not duplicate the ledger.
+`/sync` provides authenticated recovery if a checkout callback or webhook is delayed. Existing
+one-time Premium accounts remain Premium and receive the configured initial allowance during
+migration; accounts without a subscription expiry retain their legacy access.
 
 ## Quick scan — `/quick-scan`
 
@@ -137,7 +155,7 @@ Derived from the caller's stored resume and its latest ATS report. Never from fi
 | Method | Path | Access | Request | Response |
 | --- | --- | --- | --- | --- |
 | GET | `/career/roadmap/{application_id}` | Premium | — | `200` roadmap (below) |
-| POST | `/career/what-if/{application_id}` | Premium | `{skill, target_level: 0..1}` | `200` projection |
+| POST | `/career/what-if/{application_id}` | Premium | `{skill, target_level: Low (0.33), Medium (0.66), or High (1)}` | `200` projection |
 
 ```jsonc
 // GET /career/roadmap/{application_id}
@@ -152,7 +170,10 @@ Derived from the caller's stored resume and its latest ATS report. Never from fi
 ```
 
 Errors: `404` application not found or not owned, `409` no resume uploaded / no ATS analysis yet,
-`422` (what-if) the skill is not in the current missing-skills set.
+`422` (what-if) the skill is not required for the role, or the target is not above its current proficiency. Missing requirements are shown as Low; requirements evidenced in the resume are shown as Medium.
+
+This roadmap is based only on the selected resume, job description, and ATS analysis. It remains stable after interviews.
+The application interview report exposes a separate interview-only improvement roadmap.
 
 ## Access probes — `/access`
 
@@ -160,6 +181,30 @@ Errors: `404` application not found or not owned, `409` no resume uploaded / no 
 | --- | --- | --- |
 | GET | `/access/ats-score` | User |
 | GET | `/access/premium` | Premium |
+
+## Interviews â€” `/interviews` *(Premium)*
+
+| Method | Path | Access | Request | Response `data` |
+| --- | --- | --- | --- | --- |
+| POST | `/interviews` | Premium | `{application_id, personality, difficulty}` | interview session |
+| GET | `/interviews/{interview_id}` | Premium | â€” | interview session |
+| POST | `/interviews/{interview_id}/questions` | Premium | `{mode: "standard" | "adaptive"}` | one persisted question |
+| GET | `/interviews/{interview_id}/questions` | Premium | â€” | ordered persisted questions |
+
+Question creation uses the application's role and JD plus the latest selected resume and ATS report when available. It returns the standard envelope:
+
+```json
+{
+  "success": true,
+  "data": {
+    "question_id": "uuid", "interview_id": "uuid", "question_number": 1,
+    "question": "How would you apply FastAPI to solve a realistic backend problem?",
+    "topic": "FastAPI", "question_type": "technical", "difficulty": "medium",
+    "expected_skills": ["FastAPI"], "reason": "This question targets FastAPI from the application context."
+  },
+  "error": null
+}
+```
 
 ## Health
 

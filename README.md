@@ -11,8 +11,9 @@ and a dedicated workspace per role: resume versions, skill gap, roadmap, what-if
 - Signup, login, JWT bearer authentication, logout/revocation
 - **Free tier** — resume upload, job-description upload or paste, ATS score with its six named
   sub-components, skill matching and improvement suggestions, with no application required
-- **Simulated upgrade to Premium** — a mock checkout that flips the account server-side. No card data is
-  requested, transmitted or stored
+- **Billing** — simulated checkout is enabled by default for local development. Razorpay subscriptions
+  support TEST mode during development and LIVE mode for real payments, with signed verification,
+  reconciliation, cancellation, webhooks, and a verified payment ledger via `BILLING_MODE=razorpay`.
 - **Premium** — ownership-protected application tracker (company, role, job description, application date,
   status), a per-application workspace, and career intelligence derived from stored ATS reports
 - PDF and DOCX text extraction (TXT also accepted for job descriptions)
@@ -49,7 +50,7 @@ backend/
     api/routes/            auth, billing, quick-scan, resumes, applications, career, access
     core/                  configuration and security
     db/                    main and resume database sessions
-    models/                user, application, payment, resume ORM models
+    models/                user, application, payment, subscription, interview and resume ORM models
     schemas/               API and parsed-data schemas
     services/resumes/      extraction, taxonomy, matching, ATS scoring, storage, versioning, pipeline
   tests/                   API, resume-flow, billing, quick-scan and PII-protection suites
@@ -81,8 +82,9 @@ npm run dev
 
 Open `http://localhost:3000`. The API and Swagger UI are at `http://localhost:8000` and `/docs`.
 
-For the complete containerized setup, run `docker compose up --build`. The backend runs migrations before
-starting.
+For the complete containerized setup, copy `.env.example` to `.env`, then run `docker compose up --build`.
+The backend runs migrations before starting. Open the containerized frontend at `http://localhost:3002` and
+the API/Swagger UI at `http://localhost:8001/docs`.
 
 ## Configuration
 
@@ -91,11 +93,17 @@ Copy `.env.example` to `.env`; never commit `.env`, credentials, databases, uplo
 - `DATABASE_URL`: synchronous database for users, applications and payments
 - `RESUME_DATABASE_URL`: async database for resume records; defaults to local SQLite for development
 - `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`: token settings
+- `BILLING_MODE`: `simulated` for local mock checkout, or `razorpay` for Razorpay test/live checkout
 - `FRONTEND_ORIGIN`: allowed browser origin
 - `NEXT_PUBLIC_API_URL`: frontend API base URL — the only API base the frontend uses
 - `GEMINI_API_KEY`, `GEMINI_MODEL`: optional structured resume/JD parsing
 - `STORAGE_BACKEND`, `STORAGE_LOCAL_DIR`: private local storage or configured provider selection
 - `MAX_UPLOAD_MB`: resume/JD upload size limit
+- `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`: matching Razorpay test (`rzp_test_`) or live (`rzp_live_`) credentials
+- `RAZORPAY_MONTHLY_PLAN_ID` or `RAZORPAY_PLAN_ID`, `RAZORPAY_YEARLY_PLAN_ID`: provider-created plan IDs
+- `RAZORPAY_WEBHOOK_SECRET`: optional secret configured for the public subscription webhook
+- `RAZORPAY_MONTHLY_AMOUNT`, `RAZORPAY_MONTHLY_CURRENCY`: expected monthly Premium plan price (₹250 / `25000` paise, `INR`); the Razorpay Dashboard plan must match
+- `PRO_MONTHLY_INTERVIEW_CREDITS`, `PRO_YEARLY_INTERVIEW_CREDITS`, `FREE_TRIAL_QUESTION_LIMIT`: entitlement defaults
 
 The default parser works without Gemini. Supabase and Cloudinary adapters are configuration points and must
 be completed/configured before use in production.
@@ -133,8 +141,7 @@ run `npm run build` before review. Keep migrations, API contracts and frontend t
 
 Known limitations:
 
-- Payments are simulated. `backend/app/api/routes/billing.py` records a mock transaction; wiring a real
-  processor means replacing that handler's body, not the route or its schema.
+- Razorpay supports test and live credentials. Public webhook delivery has not been exercised end-to-end.
 - Interview preparation is not implemented.
 - Years of experience are estimated by regex over phrases like "5+ years", so a resume that never states a
   total will score 0 on the experience component of the match.

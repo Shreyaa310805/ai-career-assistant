@@ -274,3 +274,157 @@ def generate_suggestions(
         )
 
     return suggestions
+
+
+# ------------------------------------------------------------------------ #
+# Contextual explanations of the ATS score
+# ------------------------------------------------------------------------ #
+_SECTION_NAMES = {"experience": "Experience", "education": "Education", "skill": "Skills"}
+
+_ATS_MAX_POINTS: dict[str, float] = {
+    "contact_completeness": 15,
+    "section_coverage": 20,
+    "skills_listed": 15,
+    "quantified_impact": 20,
+    "length_check": 15,
+    "work_history_structure": 15,
+}
+
+_ATS_LABELS: dict[str, str] = {
+    "contact_completeness": "contact details",
+    "section_coverage": "section coverage",
+    "skills_listed": "skills alignment",
+    "quantified_impact": "quantified impact",
+    "length_check": "resume length",
+    "work_history_structure": "work history",
+}
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def explain_ats_components(
+    raw_text: str,
+    parsed: ParsedResumeData,
+    components: dict[str, float],
+    jd: ParsedJDData | None = None,
+    jd_text: str = "",
+) -> dict[str, str]:
+    """One sentence per ATS component, derived from this resume's own data.
+
+    Mirrors the checks in `calculate_ats_score()`, so every statement (e.g.
+    "3 of 5 bullets include a metric") is the same fact the score used.
+    """
+    explanations: dict[str, str] = {}
+
+    # Contact details: say which piece is missing rather than a generic note.
+    if parsed.email and parsed.phone:
+        explanations["contact_completeness"] = "Both an email address and a phone number were found."
+    elif parsed.email:
+        explanations["contact_completeness"] = (
+            "Email found, but no phone number was detected — add one near the top."
+        )
+    elif parsed.phone:
+        explanations["contact_completeness"] = (
+            "Phone number found, but no email address was detected — add one near the top."
+        )
+    else:
+        explanations["contact_completeness"] = (
+            "Neither an email address nor a phone number was detected."
+        )
+
+    lowered = raw_text.lower()
+    found = [m for m in _CORE_SECTION_MARKERS if m in lowered]
+    absent = [_SECTION_NAMES[m] for m in _CORE_SECTION_MARKERS if m not in lowered]
+    if not absent:
+        explanations["section_coverage"] = (
+            "All 3 core sections (Experience, Education, Skills) were detected."
+        )
+    else:
+        explanations["section_coverage"] = (
+            f"{len(found)} of {len(_CORE_SECTION_MARKERS)} core sections detected; "
+            f"no {', '.join(absent)} heading was found."
+        )
+
+    jd_skills = [*jd.required_skills, *jd.preferred_skills] if jd else []
+    if jd_skills:
+        matched, _ = match_skills(parsed.skills, jd_skills)
+        explanations["skills_listed"] = (
+            f"{len(matched)} of {_plural(len(jd_skills), 'skill')} in the job description "
+            "appear on your resume."
+        )
+    elif jd_text.strip():
+        pct = round(_keyword_overlap_ratio(raw_text, jd_text) * 100)
+        explanations["skills_listed"] = (
+            f"About {pct}% of the job description's key terms also appear on your resume."
+        )
+    else:
+        explanations["skills_listed"] = (
+            f"{_plural(len(parsed.skills), 'skill')} listed; 8 or more earns full points "
+            "when no job description is given."
+        )
+
+    bullets = [b for item in parsed.work_history for b in item.bullets]
+    if not bullets:
+        explanations["quantified_impact"] = (
+            "No bullet points were found under your work history, so nothing could be checked for metrics."
+        )
+    else:
+        quantified = sum(1 for b in bullets if _METRIC_RE.search(b))
+        explanations["quantified_impact"] = (
+            f"{quantified} of {_plural(len(bullets), 'bullet')} include a metric or number."
+        )
+
+    word_count = len(raw_text.split())
+    if 250 <= word_count <= 1100:
+        explanations["length_check"] = (
+            f"{word_count} words — within the 250–1100 range ATS parsers handle best."
+        )
+    elif word_count < 250:
+        explanations["length_check"] = (
+            f"{word_count} words — on the short side; aim for at least 250."
+        )
+    else:
+        explanations["length_check"] = (
+            f"{word_count} words — longer than the 1100 that parses cleanly; trim it."
+        )
+
+    if parsed.work_history:
+        explanations["work_history_structure"] = (
+            f"{_plural(len(parsed.work_history), 'role')} detected with company and title."
+        )
+    else:
+        explanations["work_history_structure"] = (
+            "No structured work history (company, role, dates) could be parsed."
+        )
+
+    return {key: text for key, text in explanations.items() if key in components}
+
+
+def summarize_ats_score(components: dict[str, float]) -> str:
+    """Headline for the score: the strongest check and where points leak most.
+
+    Ranks by fraction of available points earned, so a 15-point check and a
+    20-point check are compared fairly; the leak is the largest absolute loss.
+    """
+    known = {k: v for k, v in components.items() if k in _ATS_MAX_POINTS}
+    if not known:
+        return ""
+
+    ratio = {k: v / _ATS_MAX_POINTS[k] for k, v in known.items()}
+    lost = {k: _ATS_MAX_POINTS[k] - v for k, v in known.items()}
+
+    strongest = max(ratio, key=lambda k: (ratio[k], _ATS_MAX_POINTS[k]))
+    weakest = max(lost, key=lambda k: lost[k])
+
+    strong_text = (
+        f"Your strongest area is {_ATS_LABELS[strongest]} "
+        f"({round(known[strongest])}/{_ATS_MAX_POINTS[strongest]:g} points)."
+    )
+    if lost[weakest] < 1:
+        return f"{strong_text} Every check is at or near full marks."
+    return (
+        f"{strong_text} Most points are being lost on {_ATS_LABELS[weakest]}, "
+        f"which earned {round(known[weakest])} of {_ATS_MAX_POINTS[weakest]:g}."
+    )

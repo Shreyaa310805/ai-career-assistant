@@ -1,14 +1,19 @@
 "use client";
 
-import { useParams } from "next/navigation";
-import { useState } from "react";
-import { Alert, Badge, Button, Card, CardHeader, Field, LinkButton, Select } from "@/components/ui";
+import { useParams, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { Alert, Button, Card, CardHeader, Field, LinkButton, Select, cx } from "@/components/ui";
 import {
   createInterview,
+  interviewSessionPath,
+  listInterviews,
+  MAX_INTERVIEW_QUESTIONS,
   type InterviewDifficulty,
+  type InterviewMode,
   type InterviewPersonality,
-  type InterviewSession,
+  type InterviewSummary,
 } from "@/lib/interviews";
+
 
 const PERSONALITIES: Array<{ value: InterviewPersonality; label: string; description: string }> = [
   { value: "technical", label: "Technical", description: "Focus on role-specific skills and problem solving." },
@@ -24,14 +29,44 @@ const DIFFICULTIES: Array<{ value: InterviewDifficulty; label: string; descripti
   { value: "hard", label: "Hard", description: "Prepare for deeper, more challenging conversations." },
 ];
 
-export default function InterviewPage() {
+const MODES: Array<{ value: InterviewMode; label: string; description: string }> = [
+  { value: "text", label: "Text", description: "Type your answers." },
+  { value: "audio", label: "Audio", description: "Speak your answers; they're transcribed and scored." },
+  {
+    value: "video",
+    label: "Video",
+    description: "A live on-camera interview. Answers are spoken and final, and your on-camera presence is scored.",
+  },
+];
+
+export default function InterviewSetupPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const applicationId = params?.id;
   const [personality, setPersonality] = useState<InterviewPersonality>("technical");
   const [difficulty, setDifficulty] = useState<InterviewDifficulty>("medium");
-  const [session, setSession] = useState<InterviewSession | null>(null);
+  const [mode, setMode] = useState<InterviewMode>("text");
   const [error, setError] = useState("");
   const [isStarting, setIsStarting] = useState(false);
+
+  const [isCheckingHistory, setIsCheckingHistory] = useState(true);
+  const [resumable, setResumable] = useState<InterviewSummary | null>(null);
+
+  useEffect(() => {
+    if (!applicationId) {
+      setIsCheckingHistory(false);
+      return;
+    }
+    listInterviews(applicationId, 1, 25)
+      .then((response) => {
+        const incomplete = response.data?.items.find((item) => item.status !== "completed");
+        setResumable(incomplete ?? null);
+      })
+      .catch(() => {
+        // A failed history check should never block starting a fresh session.
+      })
+      .finally(() => setIsCheckingHistory(false));
+  }, [applicationId]);
 
   async function startInterview() {
     if (!applicationId) {
@@ -41,55 +76,80 @@ export default function InterviewPage() {
     setError("");
     setIsStarting(true);
     try {
-      const response = await createInterview(applicationId, personality, difficulty);
+      const response = await createInterview(applicationId, personality, difficulty, MAX_INTERVIEW_QUESTIONS, mode);
       if (!response.success || !response.data) {
         setError(response.error?.message ?? "Unable to create an interview session. Please try again.");
         return;
       }
-      setSession(response.data);
+      router.push(interviewSessionPath(response.data.interview_id, response.data.mode));
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to create an interview session. Please try again.");
-    } finally {
       setIsStarting(false);
     }
-  }
-
-  if (session) {
-    return (
-      <Card>
-        <CardHeader title="Interview session created" description="Your preferences have been saved for this application." />
-        <div className="space-y-6 p-6">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone="success">Ready</Badge>
-            <Badge tone="brand">{labelFor(PERSONALITIES, session.personality)}</Badge>
-            <Badge>{labelFor(DIFFICULTIES, session.difficulty)}</Badge>
-          </div>
-          <dl className="grid gap-4 rounded-lg border border-line bg-surface-muted/60 p-4 sm:grid-cols-2">
-            <Info label="Session ID" value={session.interview_id} mono />
-            <Info label="Status" value="Created" />
-            <Info label="Personality" value={labelFor(PERSONALITIES, session.personality)} />
-            <Info label="Difficulty" value={labelFor(DIFFICULTIES, session.difficulty)} />
-          </dl>
-          <Alert tone="info">Session setup is complete. Question generation and live practice will be added in a future step.</Alert>
-          <div className="flex flex-wrap gap-3">
-            <LinkButton href={`/applications/${applicationId}`} variant="secondary">
-              Back to application
-            </LinkButton>
-            <Button variant="ghost" onClick={() => setSession(null)}>
-              Create another session
-            </Button>
-          </div>
-        </div>
-      </Card>
-    );
   }
 
   return (
     <div className="space-y-6">
       <Card>
-        <CardHeader title="Set up interview practice" description="Choose the practice style and level for this application." />
+        <CardHeader
+          title="Set up interview practice"
+          description="Choose the practice style and level for this application."
+          action={
+            <div className="flex gap-2"><LinkButton href={`/applications/${applicationId}/interview/report`} variant="secondary" size="sm">Application report</LinkButton><LinkButton href={`/applications/${applicationId}/interview/history`} variant="secondary" size="sm">
+              Past sessions
+            </LinkButton></div>
+          }
+        />
         <div className="space-y-6 p-6">
           {error ? <Alert>{error}</Alert> : null}
+          {!isCheckingHistory && resumable ? (
+            <Alert tone="info">
+              You have a session in progress ({resumable.answered_count}/{resumable.question_target ?? resumable.question_count}{" "}
+              answered).{" "}
+              <a className="font-semibold underline" href={interviewSessionPath(resumable.interview_id, resumable.mode)}>
+                Resume it
+              </a>{" "}
+              or view it from{" "}
+              <a className="font-semibold underline" href={`/applications/${applicationId}/interview/history`}>
+                Session history
+              </a>
+              .
+            </Alert>
+          ) : null}
+          <fieldset>
+            <legend className="text-sm font-medium text-slate-700">Interview mode</legend>
+            <div className="mt-2 grid gap-3 sm:grid-cols-3" role="radiogroup" aria-label="Interview mode">
+              {MODES.map((option) => (
+                <label
+                  key={option.value}
+                  className={cx(
+                    "flex cursor-pointer flex-col gap-1 rounded-lg border p-4 transition-colors",
+                    mode === option.value
+                      ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500"
+                      : "border-line bg-white hover:border-line-strong",
+                  )}
+                >
+                  <span className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                    <input
+                      type="radio"
+                      name="interview-mode"
+                      value={option.value}
+                      checked={mode === option.value}
+                      onChange={() => setMode(option.value)}
+                      className="accent-brand-600"
+                    />
+                    {option.label}
+                  </span>
+                  <span className="text-xs leading-5 text-slate-500">{option.description}</span>
+                </label>
+              ))}
+            </div>
+            {mode === "video" ? (
+              <p className="mt-2 text-xs text-slate-500">
+                Your browser will ask for camera and microphone access when the video interview opens.
+              </p>
+            ) : null}
+          </fieldset>
           <Field label="Interview personality" hint={PERSONALITIES.find((option) => option.value === personality)?.description}>
             <Select value={personality} onChange={(event) => setPersonality(event.target.value as InterviewPersonality)}>
               {PERSONALITIES.map((option) => (
@@ -108,8 +168,9 @@ export default function InterviewPage() {
               ))}
             </Select>
           </Field>
+          <p className="rounded-lg bg-surface-muted/60 px-4 py-3 text-sm text-slate-600">Premium interview sessions include {MAX_INTERVIEW_QUESTIONS} questions.</p>
           <div className="flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
-            <p className="text-sm text-slate-500">This creates a saved interview session. No questions are generated yet.</p>
+            <p className="text-sm text-slate-500">This creates a saved interview session, then you can generate role-specific questions.</p>
             <Button size="lg" onClick={startInterview} disabled={isStarting || !applicationId}>
               {isStarting ? "Starting interview…" : "Start Interview"}
             </Button>
@@ -119,22 +180,11 @@ export default function InterviewPage() {
       <Card className="bg-surface-muted/60 p-6">
         <h2 className="text-[15px] font-semibold">What happens next</h2>
         <p className="mt-1.5 text-sm leading-6 text-slate-500">
-          This session is connected to the current application. Its role and job description will be available when question generation is introduced.
+          This session uses the current application’s role, job description, resume skills, and ATS context when available.
+          Questions get harder or easier from question 3 onward based on how you're doing, and each answer is scored for
+          both quality and confidence.
         </p>
       </Card>
-    </div>
-  );
-}
-
-function labelFor(options: Array<{ value: string; label: string }>, value: string) {
-  return options.find((option) => option.value === value)?.label ?? value;
-}
-
-function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div>
-      <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</dt>
-      <dd className={mono ? "mt-1 break-all font-mono text-xs text-slate-700" : "mt-1 text-sm text-slate-700"}>{value}</dd>
     </div>
   );
 }

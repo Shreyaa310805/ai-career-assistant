@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.user import Plan, RevokedToken, User
+from app.services.entitlements import expire_access
 
 bearer_scheme = HTTPBearer(auto_error=False)
 DbSession = Annotated[Session, Depends(get_db)]
@@ -30,7 +31,7 @@ def get_current_user(db: DbSession, credentials: Annotated[HTTPAuthorizationCred
     user = db.get(User, user_id)
     if not user:
         raise unauthorized
-    return user
+    return expire_access(db, user)
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]

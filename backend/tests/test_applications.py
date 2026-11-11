@@ -14,7 +14,9 @@ def token_for(email: str, name: str) -> dict[str, str]:
 
 def premium_token_for(email: str, name: str) -> dict[str, str]:
     headers = token_for(email, name)
-    assert client.post("/api/v1/billing/checkout", headers=headers, json={"plan": "PREMIUM"}).status_code == 201
+    user_id = client.get("/api/v1/auth/me", headers=headers).json()["id"]
+    from tests.helpers import grant_premium
+    grant_premium(user_id)
     return headers
 
 

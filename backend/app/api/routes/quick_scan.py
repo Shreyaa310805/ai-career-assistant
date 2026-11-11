@@ -155,6 +155,8 @@ async def quick_scan_latest(
                 "improvement_suggestions": report.improvement_suggestions,
                 "ats_breakdown": (report.score_breakdown or {}).get("ats"),
                 "match_breakdown": (report.score_breakdown or {}).get("match"),
+                "ats_explanations": (report.score_breakdown or {}).get("ats_explanations"),
+                "ats_summary": (report.score_breakdown or {}).get("ats_summary"),
                 "created_at": report.created_at.isoformat(),
             },
         }

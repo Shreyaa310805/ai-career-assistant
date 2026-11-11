@@ -1,6 +1,6 @@
 """
-Module 1 (Resume & ATS) route handlers — implements exactly the five
-endpoints in the frozen API contract:
+Module 1 (Resume & ATS) route handlers — the five endpoints of the
+frozen API contract:
 
     POST  /api/v1/resumes/upload
     POST  /api/v1/resumes/analyze
@@ -11,6 +11,11 @@ endpoints in the frozen API contract:
 Every handler returns via success_response() (the {success,data,error}
 envelope); every failure raises an ApiError subclass that the global
 exception handler in app/main.py converts to the same envelope.
+
+Two additive endpoints sit alongside the frozen five and change none of them:
+
+    GET   /api/v1/resumes/library
+    POST  /api/v1/resumes/reuse
 """
 import uuid
 
@@ -30,9 +35,13 @@ from app.schemas.resume import (
     CompareResumesResponse,
     LatestAtsSummary,
     ParsedResumeData,
+    ResumeLibraryItem,
+    ResumeLibraryResponse,
     ResumeVersionSummary,
+    ReuseResumeRequest,
     SelectBestRequest,
     SelectBestResponse,
+    UploadResumeResponse,
     VersionListResponse,
 )
 from app.services.resumes.pipeline import (
@@ -44,7 +53,12 @@ from app.services.resumes.pipeline import (
     run_analysis,
     validate_uuid,
 )
-from app.services.resumes.versioning import diff_versions, get_latest_ats_report, recommend_version
+from app.services.resumes.versioning import (
+    diff_versions,
+    get_latest_ats_report,
+    next_version_number,
+    recommend_version,
+)
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 
@@ -76,6 +90,8 @@ def _resume_to_summary(resume: Resume, latest_report: AtsReport | None) -> Resum
                 created_at=latest_report.created_at,
                 ats_breakdown=(latest_report.score_breakdown or {}).get("ats"),
                 match_breakdown=(latest_report.score_breakdown or {}).get("match"),
+                ats_explanations=(latest_report.score_breakdown or {}).get("ats_explanations"),
+                ats_summary=(latest_report.score_breakdown or {}).get("ats_summary"),
             )
             if latest_report is not None
             else None
@@ -245,5 +261,94 @@ async def select_best_version(
         best_resume_id=best_resume.id,
         version_number=best_resume.version_number,
         updated_versions=updated_count,
+    )
+    return success_response(payload.model_dump(mode="json"))
+
+
+# --------------------------------------------------------------------------
+# Additive: resume library + reuse. Not part of the frozen contract above.
+# --------------------------------------------------------------------------
+@router.get("/library")
+async def resume_library(
+    current_user: CurrentUser,
+    application_db: DbSession,
+    db: AsyncSession = Depends(get_db),
+):
+    """Every resume the caller has uploaded, across applications and quick scans."""
+    applications = {
+        str(app.id): app
+        for app in application_db.scalars(
+            select(Application).where(Application.user_id == current_user.id)
+        )
+    }
+    if not applications:
+        return success_response(ResumeLibraryResponse(resumes=[]).model_dump(mode="json"))
+
+    result = await db.execute(
+        select(Resume)
+        .where(Resume.application_id.in_(list(applications)))
+        .order_by(Resume.created_at.desc())
+    )
+    items = []
+    for resume in result.scalars().all():
+        app = applications[resume.application_id]
+        parsed = ParsedResumeData.model_validate(resume.parsed_data)
+        items.append(
+            ResumeLibraryItem(
+                resume_id=resume.id,
+                application_id=resume.application_id,
+                company=app.company,
+                role=app.role,
+                label="Quick scan" if app.is_scratch else f"{app.company} — {app.role}",
+                is_quick_scan=app.is_scratch,
+                version_number=resume.version_number,
+                created_at=resume.created_at,
+                skills=parsed.skills,
+                experience_years=parsed.experience_years,
+            )
+        )
+    return success_response(ResumeLibraryResponse(resumes=items).model_dump(mode="json"))
+
+
+@router.post("/reuse")
+async def reuse_resume(
+    body: ReuseResumeRequest,
+    current_user: CurrentUser,
+    application_db: DbSession,
+    db: AsyncSession = Depends(get_db),
+):
+    """Copy an existing resume's parsed data and text into another application.
+
+    The stored file is referenced, not re-uploaded. The copy takes the next
+    version number of the *target* application (1 for a fresh one) rather than
+    inheriting the source's, and carries no ATS reports: it has not been scored
+    against the target's job description.
+    """
+    application_id = validate_uuid(body.application_id, "application_id")
+    _require_owned_application(application_id, current_user, application_db)
+
+    source = await get_resume_or_404(db, body.source_resume_id)
+    # The source must also be one of the caller's own resumes.
+    _require_owned_application(source.application_id, current_user, application_db)
+
+    version_number = await next_version_number(db, application_id)
+    clone = Resume(
+        id=str(uuid.uuid4()),
+        application_id=application_id,
+        version_number=version_number,
+        file_url=source.file_url,
+        raw_text=source.raw_text,
+        parsed_data=dict(source.parsed_data),
+        is_best_version=(version_number == 1),
+    )
+    db.add(clone)
+    await db.commit()
+    await db.refresh(clone)
+
+    payload = UploadResumeResponse(
+        resume_id=clone.id,
+        application_id=clone.application_id,
+        version_number=clone.version_number,
+        parsed_data=public_resume_details(ParsedResumeData.model_validate(clone.parsed_data)),
     )
     return success_response(payload.model_dump(mode="json"))
