@@ -12,6 +12,23 @@ from app.models.resume import AtsReport, Resume
 from app.schemas.interview import DifficultyEnum, GeneratedQuestion
 from app.services.resumes.gemini_service import AdaptationContext, get_gemini_service
 
+# Shown to the candidate when the resume and the job description have nothing
+# in common: interviewing on skills the resume does not evidence would not be
+# a fair rehearsal, so point them at the gap work instead.
+NO_OVERLAP_NOTICE = (
+    "Your resume does not share any skill with this role's requirements, so these questions "
+    "can only cover what your resume already shows. Work through the skill-gap roadmap and "
+    "update your resume for this role before using this interview as preparation."
+)
+
+
+def alignment_notice(matched_skills: list[str], resume_skills: list[str]) -> str | None:
+    """Session-level advice about resume/JD overlap, or None when it is fine."""
+    if matched_skills or not resume_skills:
+        return None
+    return NO_OVERLAP_NOTICE
+
+
 # From question 3 onward, this session's own running performance is factored
 # into the next question's difficulty/topic. Questions 1-2 stay at the fixed
 # baseline chosen at setup so there is at least one evaluated data point to
@@ -51,7 +68,13 @@ async def generate_question_for_application(
     question_number: int, previous_questions: list[str], resume_db: AsyncSession,
     adaptation: AdaptationContext | None = None,
 ) -> GeneratedQuestion:
-    """Build a privacy-safe context from the latest best resume/ATS report."""
+    """Build a privacy-safe context from the latest best resume/ATS report.
+
+    `matched_skills` — the skills the resume and the job description share —
+    is the primary source of topics. `missing_skills` is passed only so the
+    generator can avoid them: a requirement the resume never evidences is not
+    something this candidate can usefully be asked about.
+    """
     resume_skills: list[str] = []
     matched_skills: list[str] = []
     missing_skills: list[str] = []
@@ -80,7 +103,7 @@ async def generate_question_for_application(
         # the optional resume store is not yet initialized.
         pass
 
-    return get_gemini_service().generate_interview_question(
+    generated = get_gemini_service().generate_interview_question(
         role=application.role,
         job_description=application.job_description or "",
         personality=personality,
@@ -93,3 +116,6 @@ async def generate_question_for_application(
         resume_evidence=resume_evidence,
         adaptation=adaptation,
     )
+    # Always server-set: the model is not a source of truth for this field.
+    generated.preparation_notice = alignment_notice(matched_skills, resume_skills)
+    return generated

@@ -1227,3 +1227,46 @@ def test_delete_interview_removes_it_and_is_owner_scoped(monkeypatch):
     assert client.delete(f"/api/v1/interviews/{interview_id}", headers=other).status_code == 404
     assert client.delete(f"/api/v1/interviews/{interview_id}", headers=owner).status_code == 200
     assert client.get(f"/api/v1/interviews/{interview_id}", headers=owner).status_code == 404
+
+
+# --------------------------------------------------------------------------
+# Question coverage: resume/JD common ground, never JD-only requirements
+# --------------------------------------------------------------------------
+def test_questions_prefer_shared_skills_and_never_use_missing_ones():
+    question = heuristic_interview_question(
+        role="Backend Engineer", personality="technical", difficulty=DifficultyEnum.medium,
+        resume_skills=["Python", "Flask", "REST APIs"], matched_skills=["Python", "Flask", "REST APIs"],
+        missing_skills=["Kubernetes"], question_number=1, previous_questions=[], resume_evidence="",
+    )
+    assert "kubernetes" not in question.question.lower()
+    assert "Kubernetes" not in question.expected_skills
+    assert question.topic in {"Python", "Flask", "REST APIs"}
+
+
+def test_thin_overlap_allows_one_resume_only_topic_after_shared_skills():
+    shared_only = heuristic_interview_question(
+        role="Backend Engineer", personality="technical", difficulty=DifficultyEnum.medium,
+        resume_skills=["Python", "Pandas"], matched_skills=["Python"], missing_skills=["Go"],
+        question_number=1, previous_questions=[], resume_evidence="",
+    )
+    assert shared_only.topic == "Python"
+    # The single shared skill is used up, so a resume-only skill is allowed.
+    resume_only = heuristic_interview_question(
+        role="Backend Engineer", personality="technical", difficulty=DifficultyEnum.medium,
+        resume_skills=["Python", "Pandas"], matched_skills=["Python"], missing_skills=["Go"],
+        question_number=2, previous_questions=[shared_only.question], resume_evidence="",
+    )
+    assert resume_only.topic == "Pandas"
+
+
+def test_no_overlap_asks_resume_topics_and_advises_the_roadmap():
+    from app.services.interview_questions import NO_OVERLAP_NOTICE, alignment_notice
+
+    question = heuristic_interview_question(
+        role="Backend Engineer", personality="technical", difficulty=DifficultyEnum.medium,
+        resume_skills=["Pandas"], matched_skills=[], missing_skills=["Go", "Kubernetes"],
+        question_number=1, previous_questions=[], resume_evidence="",
+    )
+    assert question.topic == "Pandas"
+    assert alignment_notice([], ["Pandas"]) == NO_OVERLAP_NOTICE
+    assert alignment_notice(["Python"], ["Python", "Pandas"]) is None

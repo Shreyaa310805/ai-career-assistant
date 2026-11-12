@@ -48,6 +48,7 @@ function FreeDashboard() {
   const [analysis, setAnalysis] = useState<AnalysisView | null>(null);
   const [loading, setLoading] = useState(true);
   const [resume, setResume] = useState<{ resume_id: string; version_number: number; skills: string[] } | null>(null);
+  const [jobDescription, setJobDescription] = useState("");
   const [freeInterview, setFreeInterview] = useState<FreeInterviewStatus | null>(null);
 
   const refreshFreeInterviewStatus = useCallback(() => {
@@ -58,7 +59,8 @@ function FreeDashboard() {
     refreshFreeInterviewStatus();
     getLatestQuickScan()
       .then((result) => {
-        const { resume: latestResume, report } = result.data;
+        const { resume: latestResume, report, job_description } = result.data;
+        setJobDescription(job_description ?? "");
         if (latestResume) {
           setResume({
             resume_id: latestResume.resume_id,
@@ -110,6 +112,7 @@ function FreeDashboard() {
             upload={uploadQuickResume}
             analyze={analyzeQuickScan}
             initialResume={resume}
+            initialJobDescription={jobDescription}
             onAnalyzed={onAnalyzed}
             onResumeUploaded={refreshFreeInterviewStatus}
           />

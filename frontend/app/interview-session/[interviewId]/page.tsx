@@ -263,6 +263,10 @@ export default function InterviewSessionPage() {
 
             {error ? <Alert>{error}</Alert> : null}
 
+            {question?.preparation_notice ? (
+              <Alert tone="warning">{question.preparation_notice}</Alert>
+            ) : null}
+
             {question ? (
               <Card className="overflow-hidden">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-surface-muted/60 px-6 py-4">

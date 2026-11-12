@@ -14,8 +14,10 @@ import uuid
 from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.models.application import Application
 from app.models.resume import AtsReport, Resume
 from app.schemas.resume import (
     AnalyzeResumeResponse,
@@ -27,7 +29,9 @@ from app.services.resumes.ats_engine import (
     calculate_ats_score,
     calculate_match_score,
     explain_ats_components,
+    explain_match_score,
     generate_suggestions,
+    match_score_details,
     summarize_ats_score,
 )
 from app.services.resumes.exceptions import (
@@ -127,13 +131,15 @@ async def run_analysis(
         resume.raw_text, resume_parsed, jd_parsed, jd_content
     )
     match_score, matched_skills, missing_skills, match_components = calculate_match_score(
-        resume_parsed, jd_parsed
+        resume_parsed, jd_parsed, jd_content
     )
     suggestions = generate_suggestions(resume_parsed, jd_parsed, missing_skills, ats_components)
     ats_explanations = explain_ats_components(
         resume.raw_text, resume_parsed, ats_components, jd_parsed, jd_content
     )
     ats_summary = summarize_ats_score(ats_components)
+    match_details = match_score_details(resume_parsed, jd_parsed, jd_content)
+    match_explanations = explain_match_score(match_details)
 
     report = AtsReport(
         resume_id=resume.id,
@@ -148,6 +154,10 @@ async def run_analysis(
             "match": match_components,
             "ats_explanations": ats_explanations,
             "ats_summary": ats_summary,
+            "match_explanations": match_explanations,
+            # Alternatives already covered by another option: not gaps, but
+            # the career roadmap lists them last at the lowest priority.
+            "covered_alternatives": match_details.covered_alternatives,
         },
     )
     db.add(report)
@@ -168,8 +178,28 @@ async def run_analysis(
         match_breakdown=match_components,
         ats_explanations=ats_explanations,
         ats_summary=ats_summary,
+        match_explanations=match_explanations,
     )
     return report, payload
+
+
+def remember_job_description(
+    application_id: str, jd_content: str, application_db: Session
+) -> None:
+    """Persist the job description that was just scored on its application.
+
+    The client holds a pasted JD in component state only, so leaving the page
+    used to lose it. Everything else already reads the JD from the
+    application record (career tools, interview questions, the workspace
+    summary), so storing it here is what lets the user come back to it.
+    """
+    if not jd_content.strip():
+        return
+    application = application_db.get(Application, uuid.UUID(application_id))
+    if application is None or (application.job_description or "") == jd_content:
+        return
+    application.job_description = jd_content
+    application_db.commit()
 
 
 # ---------------------------------------------------------------------------

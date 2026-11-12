@@ -66,6 +66,15 @@ _HEDGE_WORDS = (
 )
 _DECISIVE_MARKERS = ("definitely", "certainly", "clearly", "specifically", "exactly", "always")
 
+# Greedy decoding for every call whose output feeds a score. Question
+# generation deliberately keeps the model default so questions stay varied.
+_EXTRACTION_TEMPERATURE = 0.0
+
+# With fewer shared resume/JD skills than this there is not enough common
+# ground to fill a session, so one question may explore a resume project the
+# job description never mentions.
+_THIN_OVERLAP = 3
+
 
 @dataclass
 class AdaptationContext:
@@ -124,6 +133,10 @@ class GeminiService:
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=ParsedResumeData,
+                # Extraction must be reproducible: the ATS score is computed
+                # from these fields, so sampling here would make the same
+                # resume score differently on every upload and every account.
+                temperature=_EXTRACTION_TEMPERATURE,
             ),
         )
         data = json.loads(response.text)
@@ -156,6 +169,7 @@ class GeminiService:
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=ParsedJDData,
+                temperature=_EXTRACTION_TEMPERATURE,  # same resume + JD => same score
             ),
         )
         data = json.loads(response.text)
@@ -244,6 +258,7 @@ class GeminiService:
             contents=self._answer_evaluation_prompt(**context),
             config=types.GenerateContentConfig(
                 response_mime_type="application/json", response_schema=GeneratedAnswerEvaluation,
+                temperature=_EXTRACTION_TEMPERATURE,  # grading the same answer twice must agree
             ),
         )
         return GeneratedAnswerEvaluation.model_validate(json.loads(response.text))
@@ -289,6 +304,34 @@ class GeminiService:
         )
 
     @staticmethod
+    def _coverage_block(matched_skills: list[str], resume_skills: list[str]) -> str:
+        """How far the question may stray from the resume/JD common ground."""
+        if not matched_skills:
+            if not resume_skills:
+                return (
+                    "\nCOVERAGE: Nothing about the candidate's background could be extracted. Ask a "
+                    "general question for the role and keep it answerable without assuming any "
+                    "specific technology.\n"
+                )
+            return (
+                "\nCOVERAGE: The resume shares no skill with this job description. Ask only about the "
+                "candidate's own resume skills, projects and experience; do not question them on the "
+                "role's requirements they cannot evidence.\n"
+            )
+        if len(matched_skills) < _THIN_OVERLAP:
+            return (
+                "\nCOVERAGE: Prefer the few skills shared by the resume and the job description. There "
+                "are only a couple of them, so if the previous questions have already covered the "
+                "shared skills, this one may instead explore a project or skill that is on the resume "
+                "but not in the job description.\n"
+            )
+        return (
+            "\nCOVERAGE: Ask about the skills and projects that appear in BOTH the resume and the job "
+            "description. A resume project outside the job description is acceptable only once the "
+            "shared skills have been covered by previous questions.\n"
+        )
+
+    @staticmethod
     def _interview_question_prompt(**context) -> str:
         adaptation: AdaptationContext | None = context.get("adaptation")
         adaptation_block = ""
@@ -301,12 +344,18 @@ class GeminiService:
                 f"DIFFICULTY below, not a hard override. Prior weaknesses to probe further: "
                 f"{adaptation.recent_weaknesses or 'none noted'}. Prior missing points to follow up on: "
                 f"{adaptation.recent_missing_points or 'none noted'}. Steer the topic toward these weak areas "
-                "when a relevant resume/JD angle exists; do not fabricate a weak area that was not reported.\n"
+                "only when the resume evidence supports them; do not fabricate a weak area that was not "
+                "reported, and do not use them to introduce a topic the resume never mentions.\n"
             )
         return (
             "You are interviewing a real candidate for the target role. Create exactly one specific, "
-            "natural interview question. Prioritize concrete candidate projects and experience from the "
-            "resume evidence, then job requirements/responsibilities, then matched and missing skills. "
+            "natural interview question. The question MUST be answerable from the candidate's own resume: "
+            "ground it in a project, role, responsibility, technology or coursework that appears in the "
+            "RESUME EVIDENCE or RESUME SKILLS below. Prefer the ground the resume and the job description "
+            "share, grounded in the candidate's concrete projects and experience. Never ask about a "
+            "technology, tool or domain that is absent from the resume, even if the job description "
+            "requires it. Follow the COVERAGE line below for how far the question may move beyond the "
+            "shared skills. "
             "Probe understanding, implementation, debugging, design, trade-offs, edge cases, or decision "
             "making as appropriate. Do not simply place one skill into a generic template. Vary the question "
             "dimension from previous questions. Skills are context, not mandatory words to insert. "
@@ -322,12 +371,14 @@ class GeminiService:
             f"PERSONALITY: {context['personality']}\nDIFFICULTY: {context['difficulty'].value}\n"
             f"QUESTION NUMBER: {context['question_number']}\nRESUME SKILLS: {context['resume_skills']}\n"
             f"RESUME EVIDENCE (projects, experience, education):\n{context['resume_evidence'][:12000]}\n"
-            f"MATCHED SKILLS: {context['matched_skills']}\nMISSING SKILLS: {context['missing_skills']}\n"
+            f"RESUME SKILLS THE JOB ALSO ASKS FOR (prefer these): {context['matched_skills']}\n"
+            f"JOB REQUIREMENTS ABSENT FROM THE RESUME (never ask about these): {context['missing_skills']}\n"
             f"PREVIOUS QUESTIONS: {context['previous_questions']}\n"
-            f"{adaptation_block}\n"
+            + GeminiService._coverage_block(context['matched_skills'], context['resume_skills'])
+            + f"{adaptation_block}\n"
             "Generate exactly one natural question and the existing structured metadata. Do not repeat or merely "
-            "rephrase previous questions. Maintain the selected personality and difficulty while staying relevant "
-            "to the role, JD, resume, and ATS context."
+            "rephrase previous questions. Maintain the selected personality and difficulty while keeping every "
+            "question grounded in the candidate's own resume evidence and resume skills."
         )
 
     # ------------------------------------------------------------------ #
@@ -404,17 +455,35 @@ def heuristic_interview_question(
     previous_questions: list[str], resume_evidence: str,
     adaptation: AdaptationContext | None = None,
 ) -> GeneratedQuestion:
-    """Stable, context-driven fallback used when Gemini is unavailable."""
+    """Stable, context-driven fallback used when Gemini is unavailable.
+
+    Topic selection never draws on `missing_skills`: a skill the JD asks for
+    but the resume does not evidence is not something this candidate can be
+    questioned on. Only skills the resume actually backs are eligible.
+    """
     difficulty = adaptation.suggested_difficulty if adaptation is not None else difficulty
+    # The common ground between resume and JD is the default pool. Resume-only
+    # skills are reachable once the shared ones have been used up, which is
+    # also the case when the two documents share nothing at all.
+    shared = list(dict.fromkeys(matched_skills))
+    shared_keys = {skill.lower() for skill in shared}
+    resume_only = [skill for skill in dict.fromkeys(resume_skills) if skill.lower() not in shared_keys]
+    if not shared:
+        pool = resume_only
+    elif len(shared) >= _THIN_OVERLAP or question_number <= len(shared):
+        pool = shared
+    else:
+        pool = resume_only or shared
+
     weak_skills = (
         [
-            skill for skill in missing_skills
+            skill for skill in pool
             if any(skill.lower() in point.lower() or point.lower() in skill.lower() for point in adaptation.recent_missing_points)
         ]
         if adaptation is not None and adaptation.recent_missing_points
         else []
     )
-    skills = weak_skills or missing_skills or matched_skills or resume_skills
+    skills = weak_skills or pool
     selected_skill = str(skills[(question_number - 1) % len(skills)]).strip() if skills else ""
     question_topic = _natural_topic(selected_skill)
     project = _resume_project_evidence(resume_evidence, previous_questions, question_number)

@@ -1,7 +1,13 @@
+import pytest
+
 from app.schemas.resume import ParsedJDData, ParsedResumeData, WorkHistoryItem
 from app.services.resumes.ats_engine import calculate_ats_score, calculate_match_score, generate_suggestions
 from app.services.resumes.gemini_service import heuristic_parse_jd, heuristic_parse_resume
-from app.services.resumes.matching import match_skills
+from app.services.resumes.matching import (
+    alternative_skill_groups,
+    match_requirements,
+    match_skills,
+)
 from tests.resumes.conftest import SAMPLE_RESUME_TEXT_LINES
 
 
@@ -208,7 +214,9 @@ def test_explanations_count_bullets_with_metrics():
         ]
     )
     explanations, _ = _explain(parsed)
-    assert explanations["quantified_impact"] == "2 of 5 bullets include a metric or number."
+    assert explanations["quantified_impact"] == (
+        "2 of 5 achievement statements (40%) include a measurable result; 50% or more earns full points."
+    )
 
 
 def test_explanations_name_missing_sections_and_word_count():
@@ -224,7 +232,7 @@ def test_explanations_report_jd_skill_overlap():
     jd = ParsedJDData(required_skills=["Python", "Docker", "AWS"], preferred_skills=["Kubernetes"])
     _score, components = calculate_ats_score("Experience Education Skills", parsed, jd)
     text = explain_ats_components("Experience Education Skills", parsed, components, jd)
-    assert text["skills_listed"].startswith("2 of 4 skills")
+    assert text["skills_listed"].startswith("2 of 4 requirements")
 
 
 def test_summary_names_strongest_check_and_biggest_leak():
@@ -253,3 +261,176 @@ def test_summary_handles_perfect_and_empty_scores():
     }
     assert "full marks" in summarize_ats_score(perfect)
     assert summarize_ats_score({}) == ""
+
+
+# --------------------------------------------------------------------------
+# Interchangeable ("X or Y") requirements
+# --------------------------------------------------------------------------
+_ALTERNATIVES_JD = (
+    "Requirements:\n"
+    "- Strong programming in Python, Java or JavaScript\n"
+    "- Experience with PostgreSQL or MySQL\n"
+    "- You will design or implement new features\n"
+    "- Docker required\n"
+)
+
+
+def test_alternatives_are_one_requirement_any_of_them_satisfies():
+    jd_skills = ["Python", "Java", "JavaScript", "PostgreSQL", "MySQL", "Docker"]
+    groups = alternative_skill_groups(_ALTERNATIVES_JD, jd_skills)
+    assert ["Python", "Java", "JavaScript"] in groups
+    assert ["PostgreSQL", "MySQL"] in groups
+    # "design or implement" is prose, not a skill requirement.
+    assert all("Docker" not in group for group in groups)
+
+    matched, missing = match_requirements(["Python", "Docker", "MySQL"], jd_skills, _ALTERNATIVES_JD)
+    assert set(matched) == {"Python", "Docker", "MySQL"}
+    assert missing == []  # every requirement is met by one of its alternatives
+
+
+def test_each_alternative_carries_the_same_weight_in_the_match_score():
+    jd = ParsedJDData(required_skills=["Python", "Java", "JavaScript", "Docker"])
+    jd_text = "Strong programming in Python, Java or JavaScript\nDocker required"
+    with_python, _m, _x, _c = calculate_match_score(
+        ParsedResumeData(skills=["Python", "Docker"]), jd, jd_text
+    )
+    with_javascript, _m, _x, _c = calculate_match_score(
+        ParsedResumeData(skills=["JavaScript", "Docker"]), jd, jd_text
+    )
+    assert with_python == with_javascript
+    # Two requirements, both met — not "two of four skills".
+    assert with_python == 100.0
+
+
+# --------------------------------------------------------------------------
+# Role match formula: traceable weights, alternatives, covered options
+# --------------------------------------------------------------------------
+def test_match_score_formula_is_traceable():
+    from app.services.resumes.ats_engine import explain_match_score, match_score_details
+
+    jd = ParsedJDData(
+        required_skills=["Go", "Python", "Java", "Docker", "Kubernetes"],
+        preferred_skills=["Terraform", "AWS"],
+        min_experience_years=4,
+    )
+    jd_text = "Go, Python or Java\nDocker\nKubernetes\nNice to have: Terraform, AWS"
+    resume = ParsedResumeData(skills=["Python", "Docker", "AWS"], experience_years=2)
+
+    score, matched, missing, components = calculate_match_score(resume, jd, jd_text)
+    # required: 2 of 3 requirements (Go/Python/Java counts once) -> 65 × 2/3
+    # preferred: 1 of 2 -> 15 × 1/2 ; experience: 2/4 -> 20 × 0.5
+    assert score == round(65 * 2 / 3 + 15 * 0.5 + 20 * 0.5, 2)
+    assert components["required_met"] == 2 and components["required_total"] == 3
+    assert components["required_points"] + components["preferred_points"] + components[
+        "experience_points"
+    ] == pytest.approx(score, abs=0.02)
+    # Go and Java are covered by Python: not gaps.
+    assert missing == ["Kubernetes", "Terraform"]
+
+    details = match_score_details(resume, jd, jd_text)
+    assert details.covered_alternatives == {"Go": ["Python"], "Java": ["Python"]}
+    lines = explain_match_score(details)
+    assert set(lines) == {"formula", "required", "preferred", "experience", "total"}
+    assert "Go / Python / Java" in lines["required"] and "met by Python" in lines["required"]
+
+
+def test_unmet_alternatives_are_listed_together_with_equal_weight():
+    jd = ParsedJDData(required_skills=["Docker", "Go", "Python", "Java"])
+    jd_text = "Docker\nOne of Go, Python or Java"
+    score, _m, missing, _c = calculate_match_score(ParsedResumeData(skills=["Docker"]), jd, jd_text)
+    assert score == 50.0  # 1 of 2 requirements, not 1 of 4 skills
+    assert missing == ["Go", "Python", "Java"]
+
+
+def test_tiers_the_jd_omits_are_redistributed_not_free():
+    jd = ParsedJDData(required_skills=["Python", "Docker"])  # no preferred, no years
+    score, *_ = calculate_match_score(ParsedResumeData(skills=["Python"]), jd)
+    assert score == 50.0
+
+
+# --------------------------------------------------------------------------
+# Quantified impact is read from the resume text itself
+# --------------------------------------------------------------------------
+_UNBULLETED_RESUME = """Asha Rao
+asha@example.com | +91 90000 22222
+EXPERIENCE
+Backend Intern — Acme Labs | Jan 2025 – Jun 2025: Reduced API latency by 35% by adding
+Redis caching and query indexes across the orders service.
+Built an internal Python3 dashboard used by the operations team every day.
+PROJECTS
+Ride Tracker — Scaled a FastAPI service to 10k daily users with Docker on AWS EC2.
+Portfolio site built with Next.js and deployed on Vercel for personal branding.
+EDUCATION
+B.Tech Computer Science | 2026 | CGPA 8.9/10
+SKILLS
+Python, FastAPI, Docker
+"""
+
+
+def test_quantified_impact_reads_unbulleted_experience_and_projects():
+    from app.services.resumes.ats_engine import achievement_statements, is_quantified
+
+    statements = achievement_statements(_UNBULLETED_RESUME)
+    assert len(statements) == 4
+    assert [is_quantified(s) for s in statements] == [True, False, True, False]
+
+    # The parser found no bullets at all — the old behaviour scored this 0.
+    parsed = ParsedResumeData(email="asha@example.com", skills=["Python"])
+    _score, components = calculate_ats_score(_UNBULLETED_RESUME, parsed)
+    assert components["quantified_impact"] == 20.0  # 2 of 4 = 50% -> full points
+
+
+def test_dates_and_version_numbers_are_not_metrics():
+    from app.services.resumes.ats_engine import is_quantified
+
+    assert not is_quantified("Software Engineer, Jan 2022 – Present, built Python3 services on EC2")
+    assert not is_quantified("Worked 2019-2021 on GPT-4 and HTML5 tooling")
+    assert is_quantified("Cut cloud spend by $12k per month")
+    assert is_quantified("Doubled checkout conversion for the mobile app")
+
+
+def test_skill_gap_priority_gives_alternatives_equal_index_and_covered_ones_last():
+    from app.api.routes.career import _priority_for_missing_skills
+
+    jd_text = "Kubernetes\nGo, Rust or Java\nTerraform"
+    ranked = _priority_for_missing_skills(
+        ["Kubernetes", "Go", "Rust", "Java", "Terraform"], "Backend Engineer", jd_text,
+        covered={"Scala": ["Python"]},
+    )
+    scores = {item["skill"]: item["priority_score"] for item in ranked}
+    # Three requirements: 0.9, 0.7, 0.5 — the whole group shares slot 2.
+    assert scores["Kubernetes"] == 0.9
+    assert scores["Go"] == scores["Rust"] == scores["Java"] == 0.7
+    assert scores["Terraform"] == 0.5
+    assert ranked[-1]["skill"] == "Scala" and ranked[-1]["priority_score"] == 0.1
+
+
+def test_oxford_comma_or_list_is_one_requirement_of_any_length():
+    jd_text = "Proficiency in at least one backend language (Python, Go, Java, or Node.js).\nDocker"
+    skills = ["Python", "Go", "Java", "Node.js", "Docker"]
+    assert alternative_skill_groups(jd_text, skills) == [["Python", "Go", "Java", "Node.js"]]
+
+    jd = ParsedJDData(required_skills=skills)
+    score, _m, missing, _c = calculate_match_score(ParsedResumeData(skills=["Java", "Docker"]), jd, jd_text)
+    assert score == 100.0 and missing == []
+    _s, _m, missing, _c = calculate_match_score(ParsedResumeData(skills=["Docker"]), jd, jd_text)
+    assert missing == ["Python", "Go", "Java", "Node.js"]
+
+
+def test_roadmap_moves_covered_alternatives_to_lowest_priority_even_for_old_reports():
+    from types import SimpleNamespace
+
+    from app.api.routes.career import _covered_alternatives, _priority_for_missing_skills
+
+    jd_text = "Python, Go, Java, or Node.js\nKubernetes"
+    # An old report that still lists Go etc. as missing and has no covered_alternatives.
+    report = SimpleNamespace(
+        matched_skills=["Java"], missing_skills=["Python", "Go", "Node.js", "Kubernetes"], score_breakdown={}
+    )
+    missing = list(report.missing_skills)
+    covered = _covered_alternatives(report, missing, {"java": "Java"}, jd_text)
+    assert set(covered) == {"Python", "Go", "Node.js"}
+    remaining = [s for s in missing if s not in covered]
+    ranked = _priority_for_missing_skills(remaining, "Backend Engineer", jd_text, covered)
+    assert ranked[0]["skill"] == "Kubernetes" and ranked[0]["priority"] == "High"
+    assert all(item["priority_score"] == 0.1 for item in ranked[1:])

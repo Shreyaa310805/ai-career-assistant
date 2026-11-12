@@ -51,6 +51,8 @@ export type InterviewQuestion = {
   difficulty: InterviewDifficulty;
   expected_skills: string[];
   reason: string;
+  /** Session advice (e.g. the resume matches none of the role's skills). */
+  preparation_notice?: string | null;
 };
 
 export type InterviewQuestionResponse = {

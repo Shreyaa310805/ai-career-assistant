@@ -10,6 +10,7 @@ from app.api.deps import DbSession, PremiumUser
 from app.db.resume_session import get_db
 from app.models.application import Application
 from app.models.resume import AtsReport, Resume
+from app.services.resumes.matching import alternative_skill_groups
 
 # Career intelligence (roadmap, skill gap, priorities, what-if, learning) is a
 # PREMIUM feature, enforced here rather than in the client.
@@ -35,26 +36,124 @@ def _skill_map(skills: list[str]) -> dict[str, str]:
     return {skill.strip().lower(): skill.strip() for skill in skills if skill and skill.strip()}
 
 
-def _priority_for_missing_skills(skills: list[str], role: str) -> list[dict[str, object]]:
-    """Rank gaps using their order in the ATS analysis, not placeholder data.
+# Priority score bounds: the first gap in the job description scores TOP,
+# the last scores BOTTOM, evenly spaced in between. Alternatives that another
+# option already covers sit below every real gap at COVERED.
+_PRIORITY_TOP = 0.9
+_PRIORITY_BOTTOM = 0.5
+_PRIORITY_COVERED = 0.1
 
-    The ATS report preserves the job-description order of required skills.  A
-    skill nearer the top is normally a stronger signal of role relevance, so
-    we use that order as a transparent, reproducible importance proxy.
+
+def _priority_label(score: float) -> str:
+    return "High" if score >= 0.7 else "Medium" if score >= 0.4 else "Low"
+
+
+def _priority_for_missing_skills(
+    skills: list[str],
+    role: str,
+    jd_text: str = "",
+    covered: dict[str, list[str]] | None = None,
+) -> list[dict[str, object]]:
+    """Rank gaps by their position in the job description.
+
+    The ATS report keeps missing skills in JD order, and a requirement nearer
+    the top is normally a stronger signal of role relevance, so position is
+    the transparent, reproducible importance proxy:
+
+        priority_score = 0.9 - 0.4 × k / (N - 1)
+
+    where N is the number of missing *requirements* and k (0-based) is this
+    requirement's position. A requirement written as alternatives ("Go,
+    Python or Java") is ONE requirement, so all its options share the same k
+    and therefore the same score — none is penalised for coming later in the
+    sentence.
+
+    `covered` holds alternatives whose requirement the resume already meets
+    through another option (skill -> the options held). They are not gaps:
+    they are listed after every real gap with the lowest score.
     """
-    total = max(len(skills), 1)
+    groups = alternative_skill_groups(jd_text, skills) if jd_text else []
+    group_of = {member.strip().lower(): index for index, group in enumerate(groups) for member in group}
+
+    # Requirement units in JD order; an alternative group takes the slot of
+    # its first member.
+    units: list[list[str]] = []
+    unit_of_group: dict[int, int] = {}
+    for skill in skills:
+        group = group_of.get(skill.strip().lower())
+        if group is None:
+            units.append([skill])
+        elif group in unit_of_group:
+            units[unit_of_group[group]].append(skill)
+        else:
+            unit_of_group[group] = len(units)
+            units.append([skill])
+
+    last = max(len(units) - 1, 1)
     result = []
-    for index, skill in enumerate(skills):
-        importance = 0.9 - (0.4 * index / max(total - 1, 1))
-        score = round(importance, 2)  # missing skills have a current level of 0
-        priority = "High" if score >= 0.7 else "Medium" if score >= 0.4 else "Low"
+    for position, unit in enumerate(units):
+        # Missing skills have a current level of 0, so importance is the score.
+        score = round(_PRIORITY_TOP - (_PRIORITY_TOP - _PRIORITY_BOTTOM) * position / last, 2)
+        for skill in unit:
+            reason = (
+                f"{skill} is a missing requirement from the ATS analysis for {role} "
+                f"(requirement {position + 1} of {len(units)} in job-description order)."
+            )
+            others = [other for other in unit if other != skill]
+            if others:
+                reason += (
+                    " The job description accepts it interchangeably with "
+                    + ", ".join(others)
+                    + ", so every option has equal priority and learning any one closes this gap."
+                )
+            result.append({
+                "skill": skill,
+                "priority": _priority_label(score),
+                "priority_score": score,
+                "reason": reason,
+            })
+
+    listed = {skill.strip().lower() for skill in skills}
+    for skill, held in (covered or {}).items():
+        if skill.strip().lower() in listed:
+            continue
         result.append({
             "skill": skill,
-            "priority": priority,
-            "priority_score": score,
-            "reason": f"{skill} is a missing requirement from the ATS analysis for {role}.",
+            "priority": _priority_label(_PRIORITY_COVERED),
+            "priority_score": _PRIORITY_COVERED,
+            "reason": (
+                f"Optional: the job description accepts {skill} or {', '.join(held)}, and your "
+                f"resume already has {', '.join(held)}, so this requirement is met. Lowest priority."
+            ),
         })
     return result
+
+
+def _covered_alternatives(
+    report: AtsReport, missing: list[str], user_skills: dict[str, str], jd_text: str
+) -> dict[str, list[str]]:
+    """Missing skills whose "X or Y" requirement the resume already meets.
+
+    Recomputed from the job description at read time (not only taken from the
+    stored report), so reports analysed before alternatives were detected are
+    corrected too. Maps each such skill to the alternatives the resume holds.
+    """
+    covered: dict[str, list[str]] = {
+        skill: list(held)
+        for skill, held in ((report.score_breakdown or {}).get("covered_alternatives") or {}).items()
+    }
+    if not jd_text.strip():
+        return covered
+    held_keys = set(user_skills) | {skill.strip().lower() for skill in report.matched_skills}
+    jd_skills = [*report.matched_skills, *report.missing_skills, *covered]
+    for group in alternative_skill_groups(jd_text, jd_skills):
+        held = [member for member in group if member.strip().lower() in held_keys]
+        if not held:
+            continue
+        for skill in missing:
+            if skill.strip().lower() in {member.strip().lower() for member in group} and skill not in held:
+                covered[skill] = held
+    return covered
 
 
 # A curated starting point per skill: documentation first, then something
@@ -175,7 +274,12 @@ async def get_career_roadmap(
     missing = [skill for skill in report.missing_skills if skill.strip().lower() in required_skills and skill.strip().lower() not in user_skills]
     extra = sorted(user_skills[key] for key in user_skills.keys() - required_skills.keys())
 
-    prioritized_skills = _priority_for_missing_skills(missing, application.role)
+    jd_text = application.job_description or ""
+    covered = _covered_alternatives(report, missing, user_skills, jd_text)
+    missing = [skill for skill in missing if skill not in covered]
+    prioritized_skills = _priority_for_missing_skills(
+        missing, application.role, jd_text, covered
+    )
     recommendations = [
         {"skill": item["skill"], "priority": item["priority"], "resources": _learning_resources(str(item["skill"]))}
         for item in prioritized_skills
@@ -206,7 +310,11 @@ async def simulate_what_if(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Choose a skill required by this ATS analysis")
 
     ordered_required = list(required)
-    importance = _priority_for_missing_skills([required[key] for key in ordered_required], application.role)[ordered_required.index(skill_key)]["priority_score"]
+    importance = _priority_for_missing_skills(
+        [required[key] for key in ordered_required],
+        application.role,
+        application.job_description or "",
+    )[ordered_required.index(skill_key)]["priority_score"]
     # The ATS report only evidences whether a role skill is present.  Present
     # skills start at Medium; missing requirements start at Low.
     current_level = MEDIUM_PROFICIENCY if skill_key in matched else LOW_PROFICIENCY

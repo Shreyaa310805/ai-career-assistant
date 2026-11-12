@@ -26,6 +26,7 @@ from app.services.resumes.pipeline import (
     get_resume_or_404,
     ingest_resume,
     public_resume_details,
+    remember_job_description,
     resolve_jd_content,
     run_analysis,
 )
@@ -104,6 +105,9 @@ async def quick_scan_analyze(
         jd_content=jd_content,
         db=db,
     )
+    # Stored on the scratch application so /quick-scan/latest can hand the
+    # job description back when the dashboard is reopened.
+    remember_job_description(application_id, jd_content, application_db)
     return success_response(payload.model_dump(mode="json"))
 
 
@@ -115,6 +119,7 @@ async def quick_scan_latest(
 ):
     """The caller's most recent quick scan, so the dashboard survives a reload."""
     application = get_or_create_scratch_application(current_user, application_db)
+    job_description = application.job_description or ""
 
     resume = (
         await db.execute(
@@ -125,7 +130,9 @@ async def quick_scan_latest(
     ).scalars().first()
 
     if resume is None:
-        return success_response({"resume": None, "report": None})
+        return success_response(
+            {"resume": None, "report": None, "job_description": job_description}
+        )
 
     report = (
         await db.execute(
@@ -138,6 +145,7 @@ async def quick_scan_latest(
     parsed = ParsedResumeData.model_validate(resume.parsed_data)
     return success_response(
         {
+            "job_description": job_description,
             "resume": {
                 "resume_id": resume.id,
                 "version_number": resume.version_number,
@@ -157,6 +165,7 @@ async def quick_scan_latest(
                 "match_breakdown": (report.score_breakdown or {}).get("match"),
                 "ats_explanations": (report.score_breakdown or {}).get("ats_explanations"),
                 "ats_summary": (report.score_breakdown or {}).get("ats_summary"),
+                "match_explanations": (report.score_breakdown or {}).get("match_explanations"),
                 "created_at": report.created_at.isoformat(),
             },
         }

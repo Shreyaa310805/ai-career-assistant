@@ -55,6 +55,8 @@ export type AnalyzeData = {
   ats_explanations?: Record<string, string> | null;
   /** One-line headline: strongest check and where points are being lost. */
   ats_summary?: string | null;
+  /** Step-by-step trace of the role match score: formula, each term, total. */
+  match_explanations?: Record<string, string> | null;
 };
 
 export type LatestAtsSummary = {
@@ -66,6 +68,8 @@ export type LatestAtsSummary = {
   match_breakdown: Record<string, number> | null;
   ats_explanations?: Record<string, string> | null;
   ats_summary?: string | null;
+  /** Step-by-step trace of the role match score: formula, each term, total. */
+  match_explanations?: Record<string, string> | null;
 };
 
 export type ResumeVersionSummary = {

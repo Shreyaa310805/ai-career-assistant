@@ -49,6 +49,7 @@ from app.services.resumes.pipeline import (
     ingest_resume,
     public_file_reference,
     public_resume_details,
+    remember_job_description,
     resolve_jd_content,
     run_analysis,
     validate_uuid,
@@ -92,6 +93,7 @@ def _resume_to_summary(resume: Resume, latest_report: AtsReport | None) -> Resum
                 match_breakdown=(latest_report.score_breakdown or {}).get("match"),
                 ats_explanations=(latest_report.score_breakdown or {}).get("ats_explanations"),
                 ats_summary=(latest_report.score_breakdown or {}).get("ats_summary"),
+                match_explanations=(latest_report.score_breakdown or {}).get("match_explanations"),
             )
             if latest_report is not None
             else None
@@ -153,6 +155,8 @@ async def analyze_resume(
         jd_content=jd_content,
         db=db,
     )
+    # Keep the JD on the application so it is still there after navigating away.
+    remember_job_description(application_id, jd_content, application_db)
     return success_response(payload.model_dump(mode="json"))
 
 

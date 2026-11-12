@@ -116,6 +116,8 @@ class AnalyzeResumeResponse(BaseModel):
     # a one-line headline. None on reports saved before these existed.
     ats_explanations: dict[str, str] | None = None
     ats_summary: str | None = None
+    # Step-by-step trace of the role match score (formula, each term, total).
+    match_explanations: dict[str, str] | None = None
 
 
 class LatestAtsSummary(BaseModel):
@@ -127,6 +129,8 @@ class LatestAtsSummary(BaseModel):
     match_breakdown: dict[str, float] | None = None
     ats_explanations: dict[str, str] | None = None
     ats_summary: str | None = None
+    # Step-by-step trace of the role match score (formula, each term, total).
+    match_explanations: dict[str, str] | None = None
 
 
 class ResumeVersionSummary(BaseModel):

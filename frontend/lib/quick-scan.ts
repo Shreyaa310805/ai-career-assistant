@@ -14,6 +14,8 @@ export type QuickScanUpload = {
 };
 
 export type QuickScanLatest = {
+  /** The job description last scored here, so reopening the page restores it. */
+  job_description: string;
   resume: {
     resume_id: string;
     version_number: number;
@@ -31,6 +33,7 @@ export type QuickScanLatest = {
     match_breakdown: Record<string, number> | null;
     ats_explanations?: Record<string, string> | null;
     ats_summary?: string | null;
+    match_explanations?: Record<string, string> | null;
     created_at: string;
   } | null;
 };

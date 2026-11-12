@@ -68,7 +68,7 @@ async def test_free_user_can_scan_without_an_application(free_client, sample_res
 async def test_latest_returns_the_most_recent_scan(free_client, sample_resume_pdf_bytes, sample_jd_text):
     empty = await free_client.get("/api/v1/quick-scan/latest")
     assert empty.status_code == 200
-    assert empty.json()["data"] == {"resume": None, "report": None}
+    assert empty.json()["data"] == {"resume": None, "report": None, "job_description": ""}
 
     upload_data = (await _upload(free_client, sample_resume_pdf_bytes)).json()["data"]
     await free_client.post(
@@ -80,6 +80,8 @@ async def test_latest_returns_the_most_recent_scan(free_client, sample_resume_pd
     assert latest["resume"]["resume_id"] == upload_data["resume_id"]
     assert latest["report"]["ats_score"] > 0
     assert latest["report"]["ats_breakdown"]
+    # The scored JD comes back so reopening the dashboard restores it.
+    assert latest["job_description"].strip() == sample_jd_text.strip()
 
 
 @pytest.mark.asyncio

@@ -68,6 +68,10 @@ class GeneratedQuestion(BaseModel):
     difficulty: DifficultyEnum
     expected_skills: list[str] = Field(default_factory=list, max_length=20)
     reason: str = Field(min_length=5, max_length=1000)
+    # Advice for the candidate about this session as a whole (e.g. the resume
+    # shares no skill with the role). Always set server-side after generation,
+    # never trusted from the model, and not persisted with the question row.
+    preparation_notice: str | None = Field(default=None, max_length=400)
 
 
 class InterviewQuestionData(GeneratedQuestion):

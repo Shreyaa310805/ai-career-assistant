@@ -20,6 +20,10 @@ const FEATURES = [
     body: "Every role gets its own space: resume versions, ATS history, skill gap, roadmap, what-if and learning, all bound to that application.",
   },
   {
+    title: "Mock interviews",
+    body: "Practice questions drawn from what your resume and the posting have in common, answered by text or voice, then scored with per-answer feedback and a session report you can download.",
+  },
+  {
     title: "What-if planning",
     body: "Pick a missing skill, set a target proficiency, and see the estimated effect on your match score before you spend a weekend on it.",
   },
@@ -29,12 +33,8 @@ const FEATURES = [
   },
 ];
 
-const COMING_SOON = [
-  { title: "Interview preparation", body: "Role-specific question sets generated from the job description and your resume gaps." },
-];
-
-const FREE_PLAN = ["Resume upload (PDF or DOCX)", "Job description upload or paste", "Full ATS score with breakdown", "Skill match against the role", "Improvement suggestions"];
-const PREMIUM_PLAN = ["Everything in Free", "Unlimited tracked applications", "Resume versions and comparison", "Skill gap analysis and priorities", "Career roadmap and learning plan", "What-if score simulation"];
+const FREE_PLAN = ["Resume upload (PDF or DOCX)", "Job description upload or paste", "Full ATS score with breakdown", "Skill match against the role", "Improvement suggestions", "A 3-question trial interview"];
+const PREMIUM_PLAN = ["Everything in Free", "Unlimited tracked applications", "Resume versions and comparison", "Skill gap analysis and priorities", "Career roadmap and learning plan", "What-if score simulation", "Full mock interviews with session reports"];
 
 const FAQ = [
   {
@@ -50,8 +50,8 @@ const FAQ = [
     a: "No. Uploading a resume, uploading a job description and getting the full scored breakdown is free, and does not need a tracked application.",
   },
   {
-    q: "How does payment work right now?",
-    a: "Checkout is simulated for this build. Clicking upgrade flips your account to Premium immediately and records a mock transaction. No card details are requested, sent or stored.",
+    q: "How does payment work?",
+    a: "Premium is a ₹250 monthly subscription taken through Razorpay Checkout, which handles cards and supported UPI options. Card details are never sent to or stored on our servers, and you can cancel the subscription at any time.",
   },
 ];
 
@@ -66,7 +66,6 @@ export default function Home() {
           <div className="hidden gap-7 text-sm font-medium text-slate-600 md:flex">
             <a href="#features" className="hover:text-slate-900">Features</a>
             <a href="#pricing" className="hover:text-slate-900">Pricing</a>
-            <a href="#roadmap" className="hover:text-slate-900">Roadmap</a>
             <a href="#faq" className="hover:text-slate-900">FAQ</a>
           </div>
           <div className="flex items-center gap-2">
@@ -127,7 +126,7 @@ export default function Home() {
             <Card className="p-7">
               <h3 className="text-lg font-semibold">Free</h3>
               <p className="mt-1 text-sm text-slate-500">Everything you need to fix one resume.</p>
-              <p className="mt-5 text-4xl font-bold tracking-tight">$0</p>
+              <p className="mt-5 text-4xl font-bold tracking-tight">₹0</p>
               <ul className="mt-6 space-y-2.5">
                 {FREE_PLAN.map((item) => (
                   <li key={item} className="flex gap-2.5 text-sm text-slate-700">
@@ -144,7 +143,7 @@ export default function Home() {
               <h3 className="text-lg font-semibold">Premium</h3>
               <p className="mt-1 text-sm text-slate-500">For an active search across many companies.</p>
               <p className="mt-5 text-4xl font-bold tracking-tight">
-                $19<span className="text-base font-medium text-slate-500"> one-time</span>
+                ₹250<span className="text-base font-medium text-slate-500"> / month</span>
               </p>
               <ul className="mt-6 space-y-2.5">
                 {PREMIUM_PLAN.map((item) => (
@@ -155,28 +154,8 @@ export default function Home() {
                 ))}
               </ul>
               <LinkButton href="/signup" className="mt-7 w-full">Get started</LinkButton>
-              <p className="mt-3 text-center text-xs text-slate-500">Checkout is simulated in this build.</p>
+              <p className="mt-3 text-center text-xs text-slate-500">Monthly subscription, billed securely through Razorpay. Cancel anytime.</p>
             </Card>
-          </div>
-        </div>
-      </section>
-
-      {/* Coming soon ------------------------------------------------------ */}
-      <section id="roadmap" className="border-y border-line bg-surface-muted py-20">
-        <div className="mx-auto max-w-6xl px-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-brand-600">On the roadmap</p>
-          <h2 className="mt-2 max-w-2xl text-3xl font-bold tracking-tight">Not built yet — and we will not pretend otherwise.</h2>
-          <p className="mt-3 max-w-2xl text-slate-600">
-            These appear in the product as clearly marked placeholders. Nothing here generates results today.
-          </p>
-          <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            {COMING_SOON.map((item) => (
-              <Card key={item.title} className="border-dashed bg-white/60 p-6">
-                <Badge>Coming soon</Badge>
-                <h3 className="mt-3 font-semibold text-slate-700">{item.title}</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-500">{item.body}</p>
-              </Card>
-            ))}
           </div>
         </div>
       </section>

@@ -60,8 +60,12 @@ def _interview_data(interview: Interview) -> InterviewData:
     )
 
 
-def _question_data(question: InterviewQuestion) -> InterviewQuestionData:
+def _question_data(
+    question: InterviewQuestion, preparation_notice: str | None = None
+) -> InterviewQuestionData:
+    """`preparation_notice` is session advice, only set on a fresh generation."""
     return InterviewQuestionData(
+        preparation_notice=preparation_notice,
         question_id=question.id,
         interview_id=question.interview_id,
         question_number=question.question_number,
@@ -321,7 +325,11 @@ async def generate_free_question(
         interview.started_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(question)
-    return APIResponse(success=True, data=_question_data(question), error=None)
+    return APIResponse(
+        success=True,
+        data=_question_data(question, generated.preparation_notice),
+        error=None,
+    )
 
 
 @router.post("/{interview_id}/answers", response_model=APIResponse)

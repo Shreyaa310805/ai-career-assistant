@@ -45,8 +45,12 @@ def _interview_data(interview: Interview) -> InterviewData:
     )
 
 
-def _question_data(question: InterviewQuestion) -> InterviewQuestionData:
+def _question_data(
+    question: InterviewQuestion, preparation_notice: str | None = None
+) -> InterviewQuestionData:
+    """`preparation_notice` is session advice, only set on a fresh generation."""
     return InterviewQuestionData(
+        preparation_notice=preparation_notice,
         question_id=question.id, interview_id=question.interview_id,
         question_number=question.question_number, question=question.question,
         topic=question.topic, question_type=question.question_type,
@@ -211,7 +215,11 @@ async def generate_question(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A question is already being generated; retry shortly")
     db.refresh(question)
-    return APIResponse(success=True, data=_question_data(question), error=None)
+    return APIResponse(
+        success=True,
+        data=_question_data(question, generated.preparation_notice),
+        error=None,
+    )
 
 
 @router.get("/{interview_id}/questions", response_model=APIResponse)
